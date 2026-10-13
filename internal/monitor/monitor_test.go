@@ -68,11 +68,11 @@ func TestSummarise(t *testing.T) {
 
 func TestCreateFindAndNames(t *testing.T) {
 	root := t.TempDir()
-	a, err := Create(root, "1.1.1.1", time.Second)
+	a, err := Create(root, "1.1.1.1", "", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := Create(root, "example.com", 2*time.Second)
+	b, _ := Create(root, "example.com", "", 2*time.Second)
 	if a.ID != "1" || b.ID != "2" {
 		t.Fatalf("ids %s %s", a.ID, b.ID)
 	}

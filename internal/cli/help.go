@@ -67,16 +67,31 @@ Usage:
   pingy --history [size]        Show how much disk history takes, or set how
                                 much each host keeps, e.g. 64M or 1G; default
                                 32M, about two weeks at one ping a second
+  pingy <host>@<origin> -d      Ping a host from another machine, over ssh
+  pingy <host> --from <a,b> -d  From several; pingy -g <host> graphs it from
+                                everywhere it's pinged from
+  pingy --origin <name> <ssh>   Name a machine to ping from, e.g. office
+                                jesse@office.lan, and check pingy can reach it
+  pingy --origin [name]         List them, or check one
+  pingy --origin -k <name>      Delete one
 
 Options:
   -d, --detach                  Run in the background
   -n, --name <name>             Name the host (it shows its address otherwise)
   -i, --interval <secs>         Time between pings, e.g. 0.5 or 2s; default 1
+      --from <origin,...>       Ping from these machines, not this one
   -h, --help                    Show this help
   -v, --version                 Show the version
 
 A host is a name or address, e.g. 1.1.1.1, router.lan or example.com. Hosts
 can also be given by their pingy name.
+
+An origin is a machine a host is pinged from: a name saved with --origin,
+or anything ssh takes, e.g. 1.1.1.1@jesse@office.lan. ssh must reach it
+without a password. Where pingy is installed, it pings the host there in
+the background, so it carries on while you're away and catches up when
+you're back; pingy -k here leaves it running there. Anywhere else, a
+script pings it, only while you're connected.
 
 A view is a group of hosts graphed together under a one-word name: pick
 them in the panel with ctrl-t, or run pingy -g with them, then press w to
@@ -117,6 +132,7 @@ In pingy -g, or hosts picked together, as in a graph, plus:
 
 Environment:
   PINGY_HOME                    Where pingy keeps hosts; default ~/.config/pingy
+  PINGY_SSH                     The ssh to run, e.g. "ssh -F ~/.ssh/other"
   PINGY_ICONS=nerd              Nerd Font icons
   NO_COLOR                      Plain output
 `

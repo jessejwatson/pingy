@@ -27,6 +27,7 @@ const (
 
 // Run is the monitor process for the host in dir: it pings until it's
 // told to stop, or, for a foreground monitor, until its owner goes away.
+// A host with an origin is pinged there instead, by runRemote.
 func Run(dir string) error {
 	m, err := Load(dir)
 	if err != nil {
@@ -44,47 +45,26 @@ func Run(dir string) error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 
-	// The monitor lives in <home>/hosts/<id>.
-	home := filepath.Dir(filepath.Dir(dir))
-	limit := historyLimit(home)
-	settingsMod := modTime(settingsPath(home))
-	trim(m.SamplesPath(), limit)
-	out, err := os.OpenFile(m.SamplesPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	up := newUpkeep(dir)
+	out, err := openSamples(m.SamplesPath(), up.limit)
 	if err != nil {
 		return err
 	}
-	defer func() { out.Close() }()
+	defer out.close()
 
 	st := State{PID: os.Getpid(), Started: time.Now().UTC()}
 	if err := m.saveState(st); err != nil {
 		return err
 	}
+	if m.Origin != "" {
+		return runRemote(m, up, out, st, stop)
+	}
 
 	var addr net.IP
 	var resolved time.Time
-	metaMod := modTime(filepath.Join(dir, "meta.json"))
-	written := int64(0)
-	if fi, err := out.Stat(); err == nil {
-		written = fi.Size()
-	}
 	next := time.Now()
 	for {
-		// pingy changes meta.json to rename or detach a monitor.
-		if mt := modTime(filepath.Join(dir, "meta.json")); !mt.Equal(metaMod) {
-			metaMod = mt
-			if fresh, err := m.Reload(); err == nil {
-				m = fresh
-			}
-		}
-		// and settings.json to change how much history is kept.
-		if mt := modTime(settingsPath(home)); !mt.Equal(settingsMod) {
-			settingsMod = mt
-			limit = historyLimit(home)
-		}
-		if m.Foreground && !alive(m.OwnerPID) {
-			if m.Ephemeral {
-				os.RemoveAll(dir)
-			}
+		if up.check(&m, out) {
 			return nil
 		}
 
@@ -111,18 +91,8 @@ func Run(dir string) error {
 		if addr != nil {
 			rtt = pingOnce(addr, min(every, maxTimeout))
 		}
-		n, _ := out.Write(formatSample(Sample{At: sent, RTT: rtt}))
-		written += int64(n)
-		if written > limit {
-			out.Close()
-			trim(m.SamplesPath(), limit)
-			if out, err = os.OpenFile(m.SamplesPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err != nil {
-				return err
-			}
-			written = 0
-			if fi, err := out.Stat(); err == nil {
-				written = fi.Size()
-			}
+		if err := out.add(Sample{At: sent, RTT: rtt}); err != nil {
+			return err
 		}
 
 		next = next.Add(every)
@@ -142,6 +112,88 @@ func Run(dir string) error {
 		}
 	}
 }
+
+// upkeep notices what changes around a running monitor: pingy editing
+// its meta.json, to rename or detach it; settings.json, for how much
+// history it keeps; and, for a foreground monitor, its owner going away.
+type upkeep struct {
+	dir, home            string
+	limit                int64
+	metaMod, settingsMod time.Time
+}
+
+func newUpkeep(dir string) *upkeep {
+	// The monitor lives in <home>/hosts/<id>.
+	home := filepath.Dir(filepath.Dir(dir))
+	return &upkeep{
+		dir: dir, home: home, limit: historyLimit(home),
+		metaMod:     modTime(filepath.Join(dir, "meta.json")),
+		settingsMod: modTime(settingsPath(home)),
+	}
+}
+
+// check reloads *m and the history limit if they changed, and says
+// whether the monitor should stop because its owner has gone.
+func (u *upkeep) check(m **Meta, out *sampleFile) bool {
+	if mt := modTime(filepath.Join(u.dir, "meta.json")); !mt.Equal(u.metaMod) {
+		u.metaMod = mt
+		if fresh, err := (*m).Reload(); err == nil {
+			*m = fresh
+		}
+	}
+	if mt := modTime(settingsPath(u.home)); !mt.Equal(u.settingsMod) {
+		u.settingsMod = mt
+		u.limit = historyLimit(u.home)
+		out.limit = u.limit
+	}
+	if (*m).Foreground && !alive((*m).OwnerPID) {
+		if (*m).Ephemeral {
+			os.RemoveAll(u.dir)
+		}
+		return true
+	}
+	return false
+}
+
+// sampleFile appends to a monitor's samples, trimming them to limit as
+// they grow.
+type sampleFile struct {
+	path    string
+	limit   int64
+	out     *os.File
+	written int64
+}
+
+func openSamples(path string, limit int64) (*sampleFile, error) {
+	f := &sampleFile{path: path, limit: limit}
+	trim(path, limit)
+	return f, f.open()
+}
+
+func (f *sampleFile) open() error {
+	out, err := os.OpenFile(f.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	f.out, f.written = out, 0
+	if fi, err := out.Stat(); err == nil {
+		f.written = fi.Size()
+	}
+	return nil
+}
+
+func (f *sampleFile) add(s Sample) error {
+	n, _ := f.out.Write(formatSample(s))
+	f.written += int64(n)
+	if f.written > f.limit {
+		f.out.Close()
+		trim(f.path, f.limit)
+		return f.open()
+	}
+	return nil
+}
+
+func (f *sampleFile) close() { f.out.Close() }
 
 func modTime(path string) time.Time {
 	fi, err := os.Stat(path)

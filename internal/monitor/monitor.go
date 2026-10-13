@@ -9,8 +9,11 @@
 //	  <id>/samples           one "<unix ms> <rtt µs>" line per ping, -1 if lost
 //	  <id>/lock              held by the monitor while it runs
 //	  <id>/monitor.log       what the monitor printed, for when it fails
+//	~/.config/pingy/origins.json    names for the machines hosts are pinged from
 //
 // Each host is pinged by its own monitor process (pingy __monitor <dir>).
+// A host with an origin is pinged from another machine instead: its
+// monitor runs ssh there and copies the pings it hears back.
 package monitor
 
 import (
@@ -35,9 +38,12 @@ const MinInterval = 200 * time.Millisecond
 // Meta is a monitor as pingy set it up. Only pingy writes it; the monitor
 // reads it again when it changes.
 type Meta struct {
-	ID       string    `json:"id"`
-	Name     string    `json:"name,omitempty"` // empty shows the target
-	Target   string    `json:"target"`         // host name or address as given
+	ID     string `json:"id"`
+	Name   string `json:"name,omitempty"` // empty shows the target
+	Target string `json:"target"`         // host name or address as given
+	// Origin is the machine the host is pinged from: an origin's name or
+	// an ssh destination, e.g. office or jesse@office.lan. Empty is here.
+	Origin   string    `json:"origin,omitempty"`
 	Interval int64     `json:"interval_ms"`
 	Created  time.Time `json:"created"`
 	// Foreground is a monitor started by pingy <host> without -d: it stops
@@ -56,14 +62,38 @@ type State struct {
 	Started time.Time `json:"started"`
 	Addr    string    `json:"addr,omitempty"`  // the address being pinged
 	Error   string    `json:"error,omitempty"` // why pings can't be sent, if they can't
+	// For a host with an origin: how it's pinged there, "pingy" or
+	// "script", and why it can't be reached, if it can't.
+	Via  string `json:"via,omitempty"`
+	Link string `json:"link,omitempty"`
 }
 
-// Label is the monitor's name, or its target when it has none.
+// Label is the monitor's name, or where it pings when it has none.
 func (m *Meta) Label() string {
 	if m.Name != "" {
 		return m.Name
 	}
-	return m.Target
+	return m.Where()
+}
+
+// Where is the target, and the origin it's pinged from if it isn't here,
+// as pingy is given them: 1.1.1.1 or 1.1.1.1@office.
+func (m *Meta) Where() string { return JoinSpec(m.Target, m.Origin) }
+
+// SplitSpec reads a host as given, target or target@origin. Host names and
+// addresses never have an @, so the first one starts the origin, which
+// may be an ssh destination with its own, like 1.1.1.1@jesse@office.lan.
+func SplitSpec(spec string) (target, origin string) {
+	target, origin, _ = strings.Cut(spec, "@")
+	return target, origin
+}
+
+// JoinSpec is SplitSpec's other half.
+func JoinSpec(target, origin string) string {
+	if origin == "" {
+		return target
+	}
+	return target + "@" + origin
 }
 
 // Every is the ping interval.
@@ -192,8 +222,9 @@ func Load(dir string) (*Meta, error) {
 	return m, nil
 }
 
-// Create makes a new monitor directory under root with the next number.
-func Create(root string, target string, interval time.Duration) (*Meta, error) {
+// Create makes a new monitor directory under root with the next number,
+// pinging target from origin ("" for here).
+func Create(root, target, origin string, interval time.Duration) (*Meta, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
@@ -221,7 +252,7 @@ func Create(root string, target string, interval time.Duration) (*Meta, error) {
 		return nil, err
 	}
 	m := &Meta{
-		ID: strconv.Itoa(n), Target: target, Interval: interval.Milliseconds(),
+		ID: strconv.Itoa(n), Target: target, Origin: origin, Interval: interval.Milliseconds(),
 		Created: time.Now().UTC(), dir: dir,
 	}
 	if err := m.Save(); err != nil {
@@ -251,12 +282,32 @@ func List(root string) []*Meta {
 	return list
 }
 
-// Find picks the monitor called arg: by name, then target, then number.
+// Find picks the monitor called arg: by name, then target (pinged from
+// here unless arg says target@origin), then number, and last a target
+// pinged from anywhere.
 func Find(root, arg string) *Meta {
+	if m := FindExact(root, arg); m != nil {
+		return m
+	}
+	if _, origin := SplitSpec(arg); origin != "" {
+		return nil
+	}
+	for _, m := range List(root) {
+		if strings.EqualFold(m.Target, arg) {
+			return m
+		}
+	}
+	return nil
+}
+
+// FindExact is Find without the last step: a target without an origin
+// means the one pinged from here.
+func FindExact(root, arg string) *Meta {
 	list := List(root)
+	target, origin := SplitSpec(arg)
 	for _, by := range []func(*Meta) bool{
 		func(m *Meta) bool { return m.Name == arg },
-		func(m *Meta) bool { return strings.EqualFold(m.Target, arg) },
+		func(m *Meta) bool { return strings.EqualFold(m.Target, target) && m.Origin == origin },
 		func(m *Meta) bool { return m.ID == arg },
 	} {
 		for _, m := range list {
@@ -282,7 +333,7 @@ func CheckName(root, name, id string) error {
 		}
 	}
 	for _, m := range List(root) {
-		if m.ID != id && name != "" && (m.Name == name || (m.Name == "" && strings.EqualFold(m.Target, name))) {
+		if m.ID != id && name != "" && (m.Name == name || (m.Name == "" && strings.EqualFold(m.Where(), name))) {
 			return fmt.Errorf("%q is already taken by monitor %s", name, m.ID)
 		}
 	}

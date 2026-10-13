@@ -387,7 +387,7 @@ func (m *model) rows() []pickRow {
 	}
 	for _, h := range m.hosts {
 		var fields []string
-		for _, f := range []string{h.meta.Name, h.meta.Target, h.state.Addr} {
+		for _, f := range []string{h.meta.Name, h.meta.Where(), h.state.Addr} {
 			if f != "" {
 				fields = append(fields, strings.ToLower(f))
 			}
@@ -398,7 +398,7 @@ func (m *model) rows() []pickRow {
 		case slices.ContainsFunc(fields, func(f string) bool { return fuzzy(f, q) }):
 			loose = append(loose, pickRow{h: h})
 		}
-		if strings.EqualFold(h.meta.Target, q) || strings.EqualFold(h.meta.Name, q) {
+		if strings.EqualFold(h.meta.Where(), q) || strings.EqualFold(h.meta.Name, q) {
 			exact = true
 		}
 	}
@@ -855,7 +855,7 @@ func (m *model) keyDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.mode, m.note = "rename", ""
 		m.input.SetValue(h.meta.Label())
-		m.input.Placeholder = h.meta.Target
+		m.input.Placeholder = h.meta.Where()
 		m.input.CursorEnd()
 		return m, m.input.Focus()
 	case "x":
@@ -1283,7 +1283,7 @@ func (m *model) renderPick() string {
 			name = u.bold(name)
 		}
 		if r.h.meta.Name != "" {
-			name += " " + u.faint(r.h.meta.Target)
+			name += " " + u.faint(r.h.meta.Where())
 		}
 		right := u.lastRTT(r.h)
 		if !r.h.running {
@@ -1388,11 +1388,21 @@ func (u ui) hostPanel(h *host, now time.Time, win window, w, hgt int, chosen boo
 func (u ui) statusLine(h *host, now time.Time) string {
 	glyph, word, c := u.status(h, now)
 	parts := []string{u.fg(c, strings.TrimSpace(glyph+" "+word))}
-	if h.state.Error != "" && h.state.Addr == "" {
+	switch {
+	case h.state.Link != "" && h.running:
+		parts[0] = u.fg(c, glyph+" "+h.state.Link)
+	case h.state.Error != "" && (h.state.Addr == "" || h.meta.Origin != "" && h.running):
 		parts[0] = u.fg(c, glyph+" "+h.state.Error)
 	}
 	if h.meta.Name != "" {
-		parts = append(parts, h.meta.Target)
+		parts = append(parts, h.meta.Where())
+	}
+	switch {
+	case h.meta.Origin == "":
+	case h.state.Via == "pingy":
+		parts = append(parts, u.faint("by pingy on "+h.meta.Origin))
+	case h.state.Via == "script":
+		parts = append(parts, u.faint("by a script on "+h.meta.Origin))
 	}
 	if a := h.state.Addr; a != "" && a != h.meta.Target {
 		parts = append(parts, u.fg(colCmd, a))

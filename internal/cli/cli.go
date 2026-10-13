@@ -83,9 +83,12 @@ func (a *App) Run(args []string) int {
 // opts is the parsed command line.
 type opts struct {
 	detach, list, graph, kill, pause, resume, all, history bool
+	origin                                                 bool
 	name                                                   string
 	interval                                               time.Duration
 	targets                                                []string
+	// from is the origins --from gave, to pair with every target.
+	from []string
 }
 
 func parseArgs(args []string) (opts, error) {
@@ -123,6 +126,21 @@ func parseArgs(args []string) (opts, error) {
 			o.history = true
 			if hasInline {
 				o.targets = append(o.targets, inline)
+			}
+		case "--origin", "--origins":
+			o.origin = true
+		case "--from":
+			v := inline
+			if !hasInline {
+				var err error
+				if v, err = value(&i, flag); err != nil {
+					return o, err
+				}
+			}
+			for _, f := range strings.Split(v, ",") {
+				if f = strings.TrimSpace(f); f != "" {
+					o.from = append(o.from, f)
+				}
 			}
 		case "-n", "--name", "-i", "--interval":
 			v := inline
@@ -181,6 +199,11 @@ func (a *App) run(args []string) error {
 				return errors.New("usage: pingy __monitor <dir>")
 			}
 			return monitor.Run(args[1])
+		case "__stream":
+			if a.Home == "" {
+				return errors.New("can't tell where to keep pingy's data; set PINGY_HOME")
+			}
+			return a.cmdStream(args[1:])
 		}
 	}
 	if a.Home == "" {
@@ -189,6 +212,27 @@ func (a *App) run(args []string) error {
 	o, err := parseArgs(args)
 	if err != nil {
 		return err
+	}
+	if o.origin {
+		if o.list || o.graph || o.pause || o.resume || o.history || o.detach || len(o.from) > 0 {
+			return errors.New("use pingy --origin on its own, or with -k to delete one")
+		}
+		return a.cmdOrigin(o.targets, o.kill)
+	}
+	if len(o.from) > 0 {
+		if len(o.targets) == 0 {
+			return errors.New("say which host to ping from there, e.g. pingy 1.1.1.1 --from office -d")
+		}
+		var specs []string
+		for _, t := range o.targets {
+			if _, origin := monitor.SplitSpec(t); origin != "" {
+				return fmt.Errorf("%s already says where it's pinged from; leave out --from", t)
+			}
+			for _, f := range o.from {
+				specs = append(specs, monitor.JoinSpec(t, f))
+			}
+		}
+		o.targets = specs
 	}
 	modes := 0
 	for _, on := range []bool{o.list, o.graph, o.kill, o.pause, o.resume, o.history} {
@@ -239,18 +283,34 @@ type startOpts struct {
 	foreground bool // stop when this pingy exits
 }
 
-// start begins pinging target, reusing a stopped monitor for it (found
-// by name, target or number) so its history carries on. It reports whether the monitor was already running
-// and whether it's new.
-func (a *App) start(target string, so startOpts) (m *monitor.Meta, already, created bool, err error) {
+// start begins pinging spec, a target or target@origin, reusing a
+// stopped monitor for it (found by name, target or number) so its history
+// carries on. It reports whether the monitor was already running and
+// whether it's new.
+func (a *App) start(spec string, so startOpts) (m *monitor.Meta, already, created bool, err error) {
 	root := a.root()
-	if m = monitor.Find(root, target); m != nil {
+	target, origin := monitor.SplitSpec(spec)
+	if m = monitor.FindExact(root, spec); m != nil {
 		if m.Running() {
 			return m, true, false, nil
 		}
 	} else {
-		if _, err := monitor.Resolve(target); err != nil {
-			return nil, false, false, fmt.Errorf("%v; check the address, or that you're online", err)
+		switch {
+		case strings.HasSuffix(spec, "@"):
+			return nil, false, false, fmt.Errorf("say where to ping %s from after the @, e.g. %soffice", target, spec)
+		case origin != "":
+			// The origin may know names this machine doesn't, so the
+			// target is left for it to look up.
+			if err := monitor.CheckRemoteTarget(target); err != nil {
+				return nil, false, false, err
+			}
+			if err := monitor.CheckDest(monitor.Dest(a.Home, origin)); err != nil {
+				return nil, false, false, err
+			}
+		default:
+			if _, err := monitor.Resolve(target); err != nil {
+				return nil, false, false, fmt.Errorf("%v; check the address, or that you're online", err)
+			}
 		}
 		if so.name != "" {
 			if err := a.checkHostName(so.name, ""); err != nil {
@@ -261,7 +321,7 @@ func (a *App) start(target string, so startOpts) (m *monitor.Meta, already, crea
 		if interval == 0 {
 			interval = monitor.DefaultInterval
 		}
-		if m, err = monitor.Create(root, target, interval); err != nil {
+		if m, err = monitor.Create(root, target, origin, interval); err != nil {
 			return nil, false, false, err
 		}
 		created = true
@@ -340,6 +400,11 @@ func (a *App) cmdDetach(target, name string, interval time.Duration) error {
 		}
 		return nil
 	}
+	if m.Origin != "" {
+		a.reportRemote(m)
+		a.hint("  pingy -l to list · pingy -g %s to graph it from everywhere · pingy to open", m.Target)
+		return nil
+	}
 	label := u.bold(m.Label())
 	if m.Name != "" {
 		label += " " + u.faint("("+m.Target+")")
@@ -358,7 +423,7 @@ func (a *App) rename(m *monitor.Meta, name string) error {
 	if err != nil {
 		return err
 	}
-	if name == fresh.Target {
+	if name == fresh.Where() {
 		name = ""
 	}
 	fresh.Name = name
@@ -451,10 +516,12 @@ func (a *App) cmdKill(targets []string, all bool) error {
 	}
 	u := a.errUI()
 	for _, m := range list {
+		st := m.State()
 		if err := m.Remove(); err != nil {
 			return err
 		}
 		a.done("Stopped pinging %s and deleted its history", u.bold(m.Label()))
+		a.remoteKillHint(m, st)
 	}
 	return nil
 }

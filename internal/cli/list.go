@@ -52,6 +52,8 @@ func (u ui) status(h *host, now time.Time) (glyph, word string, c color.Color) {
 	switch {
 	case !h.running:
 		return u.icons.stopped, "stopped", colBorder
+	case h.state.Link != "":
+		return u.icons.down, "can't reach", colBad
 	case h.state.Error != "" && h.state.Addr == "":
 		return u.icons.down, "can't resolve", colBad
 	case len(s) == 0:
@@ -122,7 +124,7 @@ func (a *App) cmdList(filter []string) error {
 		}
 		target := u.faint("-")
 		if h.meta.Name != "" {
-			target = h.meta.Target
+			target = h.meta.Where()
 		}
 		addr := h.state.Addr
 		if addr == "" || addr == h.meta.Target {

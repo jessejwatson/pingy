@@ -25,6 +25,16 @@ type savedView struct {
 type viewHost struct {
 	ID     string `json:"id"`
 	Target string `json:"target"`
+	Origin string `json:"origin,omitempty"`
+}
+
+func newViewHost(m *monitor.Meta) viewHost {
+	return viewHost{ID: m.ID, Target: m.Target, Origin: m.Origin}
+}
+
+// is says whether m pings what vh does.
+func (vh viewHost) is(m *monitor.Meta) bool {
+	return strings.EqualFold(m.Target, vh.Target) && m.Origin == vh.Origin
 }
 
 type viewsFile struct {
@@ -82,11 +92,9 @@ func findView(vs []savedView, name string) int {
 // and counts those no longer pinged.
 func (v savedView) resolve(metas []*monitor.Meta) (found []*monitor.Meta, gone int) {
 	for _, vh := range v.Hosts {
-		i := slices.IndexFunc(metas, func(m *monitor.Meta) bool {
-			return m.ID == vh.ID && strings.EqualFold(m.Target, vh.Target)
-		})
+		i := slices.IndexFunc(metas, func(m *monitor.Meta) bool { return m.ID == vh.ID && vh.is(m) })
 		if i < 0 {
-			i = slices.IndexFunc(metas, func(m *monitor.Meta) bool { return strings.EqualFold(m.Target, vh.Target) })
+			i = slices.IndexFunc(metas, vh.is)
 		}
 		switch {
 		case i < 0:
@@ -114,7 +122,7 @@ func (a *App) checkViewName(vs []savedView, name, old string) error {
 		return err
 	}
 	for _, m := range monitor.List(a.root()) {
-		if strings.EqualFold(m.Target, name) || m.ID == name {
+		if strings.EqualFold(m.Target, name) || strings.EqualFold(m.Where(), name) || m.ID == name {
 			return fmt.Errorf("%q is already taken by monitor %s", name, m.ID)
 		}
 	}
@@ -152,7 +160,7 @@ func (a *App) saveView(name, old string, hosts []*host) error {
 	}
 	v := savedView{Name: name}
 	for _, h := range hosts {
-		v.Hosts = append(v.Hosts, viewHost{ID: h.meta.ID, Target: h.meta.Target})
+		v.Hosts = append(v.Hosts, newViewHost(h.meta))
 	}
 	if i := findView(vs, old); old != "" && i >= 0 {
 		vs[i] = v
@@ -178,7 +186,7 @@ func (a *App) updateView(name string, hosts []*host) error {
 	}
 	var out []viewHost
 	for _, h := range hosts {
-		out = append(out, viewHost{ID: h.meta.ID, Target: h.meta.Target})
+		out = append(out, newViewHost(h.meta))
 	}
 	all := monitor.List(a.root())
 	for _, vh := range vs[i].Hosts {
@@ -202,7 +210,9 @@ func (a *App) deleteView(name string) error {
 }
 
 // expand turns hosts and view names, as given to pingy -g or -l, into the
-// monitors they mean, each once. A view's name wins over a host's target.
+// monitors they mean, each once. A view's name wins over a host's name,
+// which wins over a target; a target without an origin means it from
+// everywhere it's pinged from, here first.
 func (a *App) expand(args []string) (list []*monitor.Meta, views []string, err error) {
 	root := a.root()
 	all := monitor.List(root)
@@ -226,6 +236,23 @@ func (a *App) expand(args []string) (list []*monitor.Meta, views []string, err e
 			}
 			views = append(views, vs[i].Name)
 			continue
+		}
+		if i := slices.IndexFunc(all, func(m *monitor.Meta) bool { return m.Name == t }); i >= 0 {
+			add(all[i])
+			continue
+		}
+		if _, origin := monitor.SplitSpec(t); origin == "" {
+			n := len(list)
+			for _, here := range []bool{true, false} {
+				for _, m := range all {
+					if strings.EqualFold(m.Target, t) && (m.Origin == "") == here {
+						add(m)
+					}
+				}
+			}
+			if len(list) > n {
+				continue
+			}
 		}
 		m := monitor.Find(root, t)
 		if m == nil {

@@ -114,3 +114,64 @@ func TestPickSeveralAndGraphThem(t *testing.T) {
 		t.Fatalf("after second esc: multi %v picked %v", m.multi, m.picked)
 	}
 }
+
+func TestFromPairsTargetsWithOrigins(t *testing.T) {
+	o, err := parseArgs([]string{"1.1.1.1", "8.8.8.8", "--from", "office, home", "-d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(o.from, []string{"office", "home"}) {
+		t.Fatalf("from = %q", o.from)
+	}
+	a, _ := testApp(t)
+	if err := a.run([]string{"1.1.1.1@office", "--from", "home", "-d"}); err == nil {
+		t.Fatal("an origin twice was allowed")
+	}
+	if err := a.run([]string{"1.1.1.1@", "-d"}); err == nil || !strings.Contains(err.Error(), "after the @") {
+		t.Fatalf("an empty origin: %v", err)
+	}
+	if err := a.run([]string{"x;id@office", "-d"}); err == nil {
+		t.Fatal("a target that isn't a host was sent to an origin")
+	}
+}
+
+func TestExpandTakesATargetFromEverywhere(t *testing.T) {
+	a, ms := testApp(t, "8.8.8.8")
+	office, _ := monitor.Create(a.root(), "1.1.1.1", "office", time.Second)
+	here, _ := monitor.Create(a.root(), "1.1.1.1", "", time.Second)
+	home, _ := monitor.Create(a.root(), "1.1.1.1", "home", time.Second)
+	home.Name = "cf-home"
+	home.Save()
+	ids := func(args ...string) []string {
+		t.Helper()
+		list, _, err := a.expand(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, m := range list {
+			out = append(out, m.ID)
+		}
+		return out
+	}
+	if got := ids("1.1.1.1"); !slices.Equal(got, []string{here.ID, office.ID, home.ID}) {
+		t.Fatalf("1.1.1.1 = %v", got)
+	}
+	if got := ids("1.1.1.1@office", "cf-home", "8.8.8.8"); !slices.Equal(got, []string{office.ID, home.ID, ms[0].ID}) {
+		t.Fatalf("by origin and name = %v", got)
+	}
+	if _, _, err := a.expand([]string{"1.1.1.1@nowhere"}); err == nil {
+		t.Fatal("found a host at an origin it isn't pinged from")
+	}
+
+	// A view keeps each origin apart, and finds it again by target and
+	// origin once it's deleted and pinged again.
+	if err := a.saveView("cf", "", hostsOf(office, here)); err != nil {
+		t.Fatal(err)
+	}
+	office.Remove()
+	again, _ := monitor.Create(a.root(), "1.1.1.1", "office", time.Second)
+	if got := ids("cf"); !slices.Equal(got, []string{again.ID, here.ID}) {
+		t.Fatalf("view = %v", got)
+	}
+}

@@ -21,7 +21,7 @@ func testApp(t *testing.T, targets ...string) (*App, []*monitor.Meta) {
 	a := &App{Home: t.TempDir(), Stdout: io.Discard, Stderr: io.Discard, Width: 120, Height: 40}
 	var metas []*monitor.Meta
 	for _, target := range targets {
-		m, err := monitor.Create(a.root(), target, time.Second)
+		m, err := monitor.Create(a.root(), target, "", time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -61,7 +61,7 @@ func TestViewFindsHostsByIDThenTarget(t *testing.T) {
 	if want := []string{"9.9.9.9", "1.1.1.1"}; !slices.Equal(targetsOf(found), want) || gone != 1 {
 		t.Fatalf("after delete: %v, %d gone; want %v, 1 gone", targetsOf(found), gone, want)
 	}
-	again, err := monitor.Create(a.root(), "8.8.8.8", time.Second)
+	again, err := monitor.Create(a.root(), "8.8.8.8", "", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

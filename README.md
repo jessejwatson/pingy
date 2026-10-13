@@ -27,6 +27,26 @@ pingy --history                  # how much disk history takes
 pingy --history 128M             # keep up to 128 MB per host
 ```
 
+## From other machines
+
+The same host can be pinged from other machines too, over ssh, and graphed
+side by side with how it looks from here, which tells a slow host from a
+slow network:
+
+```sh
+pingy --origin office jesse@office.lan   # name a machine, and check it's reachable
+pingy 1.1.1.1 --from office,home -d      # ping from there
+pingy 1.1.1.1@jesse@lab.lan -d           # or from anywhere ssh reaches
+pingy -g 1.1.1.1                         # graph it from everywhere at once
+```
+
+ssh has to reach the machine without a password (a key, or the agent). If
+pingy is installed there, it pings the host in the background as
+`pingy <host> -d` would, so it carries on while you're away, and the gap is
+filled in when you're back; `pingy -k` here leaves it running there. If it
+isn't, a small shell script pings the host instead, for as long as the
+connection lasts, so nothing has to be installed.
+
 Each host is pinged by its own small background process, which uses the
 system's `ping`, so no special privileges are needed. Every result is kept in
 `~/.config/pingy/hosts/<n>/samples`, up to 32 MB per host by default (about
