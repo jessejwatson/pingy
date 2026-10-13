@@ -83,7 +83,7 @@ and never starts pinging anything by itself.
 In the panel:
   type                          Search; enter opens the chosen host or view
   enter on "+ Ping …"           Start pinging what you typed
-  ctrl-x · ctrl-s               Stop and delete (a view: just the view) · pause
+  ctrl-x · ctrl-p               Stop and delete (a view: just the view) · pause
                                 or resume (a view: all its hosts)
   ctrl-a                        Pause every host, or resume them all if none
                                 is running
@@ -97,7 +97,7 @@ In a graph:
   shift-← → (H L) · pgup pgdn   A whole screen at a time
   home · end                    Oldest · now, following new pings
   + -                           Zoom in and out
-  n · s · x                     Rename · pause or resume · stop and delete
+  n · p · x                     Rename · pause or resume · stop and delete
   esc                           Back
 
 In pingy -g, or hosts picked together, as in a graph, plus:
@@ -107,7 +107,7 @@ In pingy -g, or hosts picked together, as in a graph, plus:
   ctrl-u ctrl-d                 A screen of hosts at a time
   a · r                         Add or remove hosts · remove the chosen one;
                                 a saved view keeps the change
-  s                             Pause these hosts, or resume them if all are
+  p                             Pause these hosts, or resume them if all are
                                 paused
   w                             Save these hosts as a view, or rename this one
 

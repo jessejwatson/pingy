@@ -149,6 +149,10 @@ func key(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl}
 	case "ctrl+x":
 		return tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl}
+	case "ctrl+p":
+		return tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl}
+	case "ctrl+s":
+		return tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl}
 	case "shift+up":
 		return tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift}
 	case "shift+down":
@@ -398,9 +402,9 @@ func TestKeyHintsAllShow(t *testing.T) {
 			}
 		}
 		m := newPickModel(a)
-		check("panel", m.renderPick(), "enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-s pause", "esc quit")
+		check("panel", m.renderPick(), "enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-p pause", "esc quit")
 		press(m, "down", "enter")
-		check("graph", m.renderDetail(), "shift-←→ page", "home/end", "n rename", "s pause", "x kill", "esc back")
+		check("graph", m.renderDetail(), "shift-←→ page", "home/end", "n rename", "p pause", "x kill", "esc back")
 		press(m, "esc")
 		m.cursor = 0
 		press(m, "enter")
@@ -423,5 +427,38 @@ func TestPauseArgs(t *testing.T) {
 	}
 	if code := a.Run([]string{"-p", "-k", "1.1.1.1"}); code == 0 {
 		t.Fatal("pingy -p -k worked")
+	}
+}
+
+// p pauses everywhere, as pingy -p does; s and ctrl-s no longer do.
+func TestPIsPause(t *testing.T) {
+	a, _ := testApp(t, "1.1.1.1", "8.8.8.8")
+	m := newPickModel(a)
+	press(m, "down", "ctrl+s")
+	if m.busy {
+		t.Fatal("ctrl-s still pauses in the panel")
+	}
+	// The commands returned aren't run, so nothing is really started.
+	press(m, "ctrl+p")
+	if !m.busy || m.cursor != 1 {
+		t.Fatalf("ctrl-p in the panel: busy %v, cursor %d (it shouldn't move up)", m.busy, m.cursor)
+	}
+	m.busy = false
+	press(m, "enter", "s")
+	if m.view != viewDetail || m.busy {
+		t.Fatalf("s in a graph: view %v busy %v", m.view, m.busy)
+	}
+	press(m, "p")
+	if !m.busy {
+		t.Fatal("p doesn't pause in a graph")
+	}
+	m.busy = false
+	press(m, "esc", "ctrl+t", "tab", "tab", "enter", "s")
+	if m.view != viewAll || m.busy {
+		t.Fatalf("s in the graphs: view %v busy %v", m.view, m.busy)
+	}
+	press(m, "p")
+	if !m.busy {
+		t.Fatal("p doesn't pause in the graphs")
 	}
 }

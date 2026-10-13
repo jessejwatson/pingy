@@ -507,7 +507,7 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.multi, m.note = !m.multi, ""
 		m.clearPicks()
 		return m, nil
-	case "up", "ctrl+p", "ctrl+k", "shift+tab":
+	case "up", "ctrl+k", "shift+tab":
 		m.cursor = max(m.cursor-1, 0)
 		return m, nil
 	case "down", "ctrl+n", "ctrl+j", "tab":
@@ -545,7 +545,7 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
-	case "ctrl+s":
+	case "ctrl+p":
 		if len(rows) > 0 && rows[m.cursor].h != nil {
 			m.busy = true
 			return m, m.toggleCmd(rows[m.cursor].h)
@@ -823,7 +823,7 @@ func (m *model) keyDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.input.Focus()
 	case "x":
 		m.mode, m.note = "kill", ""
-	case "s":
+	case "p":
 		m.busy = true
 		return m, m.toggleCmd(h)
 	}
@@ -989,7 +989,7 @@ func (m *model) allKeys(fits int) []string {
 	if len(hosts) > 1 {
 		hints = append(hints, "↑↓ choose", "shift-↑↓ reorder")
 	}
-	hints = append(hints, "a add", "r remove", "w save", "s pause", "←→ time", "+/- zoom")
+	hints = append(hints, "a add", "r remove", "w save", "p pause", "←→ time", "+/- zoom")
 	if m.fromPick {
 		hints = append(hints, "esc back")
 	} else {
@@ -1096,7 +1096,7 @@ func (m *model) keyAll(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.showFocus()
 	case "a":
 		return m, m.addMore()
-	case "s":
+	case "p":
 		if len(hosts) > 0 {
 			what := "these hosts"
 			if m.viewName != "" {
@@ -1177,7 +1177,7 @@ func (m *model) renderPick() string {
 		}
 	}
 	count := u.faint(fmt.Sprintf("%d/%d", shown, len(m.hosts)))
-	keys := []string{"enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-s pause", "ctrl-a pause all", "esc quit"}
+	keys := []string{"enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-p pause", "ctrl-a pause all", "esc quit"}
 	if m.multi {
 		count = u.fg(colAccent, fmt.Sprintf("%d picked ", len(m.picked))) + count
 		keys = []string{"tab pick", "enter graph them", "esc done"}
@@ -1389,7 +1389,7 @@ func (m *model) renderDetail() string {
 		spread(u.faint(span+" · "+fmtStep(step)+" per column"), when, innerW),
 		"",
 	}
-	keys := []string{"←→ move", "shift-←→ page", "home/end", "+/- zoom", "n rename", "s pause", "x kill"}
+	keys := []string{"←→ move", "shift-←→ page", "home/end", "+/- zoom", "n rename", "p pause", "x kill"}
 	switch {
 	case m.mode == "rename":
 		keys = []string{"enter save", "esc cancel", "empty for the address"}
