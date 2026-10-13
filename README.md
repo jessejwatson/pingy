@@ -51,10 +51,10 @@ bin/pingy 1.1.1.1 -d
 ## Homebrew
 
 `Formula/pingy.rb` is the formula for the tap. After tagging a release
-(`v0.1.0`), set `sha256` to the tarball's checksum:
+(`v0.1.1`), set `sha256` to the tarball's checksum:
 
 ```sh
-curl -sL https://github.com/jessejwatson/pingy/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
+curl -sL https://github.com/jessejwatson/pingy/archive/refs/tags/v0.1.1.tar.gz | shasum -a 256
 ```
 
 ## License
