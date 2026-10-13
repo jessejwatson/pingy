@@ -18,8 +18,8 @@ class Pingy < Formula
       panel to search hosts and see their graphs, `pingy -l` lists them and
       `pingy -g` graphs them all.
 
-      Background pings stop when you log out or restart; `pingy -r` starts
-      them all again.
+      `pingy -p` pauses every host, keeping their history. Background pings
+      also stop when you log out or restart; `pingy -r` starts them all again.
     EOS
   end
 

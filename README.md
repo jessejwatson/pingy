@@ -21,6 +21,7 @@ pingy -g                         # graph them all, live
 pingy -g office                  # graph a saved view
 pingy                            # the panel
 pingy -k cloudflare              # stop one and delete its history
+pingy -p                         # pause them all, keeping their history
 pingy -r                         # start stopped ones again, e.g. after a restart
 ```
 

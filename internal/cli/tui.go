@@ -550,6 +550,16 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			return m, m.toggleCmd(rows[m.cursor].h)
 		}
+		if len(rows) > 0 && rows[m.cursor].v != nil {
+			if hs, _ := m.viewHosts(rows[m.cursor].v); len(hs) > 0 {
+				return m, m.toggleAllCmd(hs, rows[m.cursor].v.Name)
+			}
+		}
+		return m, nil
+	case "ctrl+a":
+		if len(m.hosts) > 0 {
+			return m, m.toggleAllCmd(m.hosts, "every host")
+		}
 		return m, nil
 	}
 	before := m.query.Value()
@@ -626,6 +636,31 @@ func (m *model) toggleCmd(h *host) tea.Cmd {
 			return opMsg{err: err}
 		}
 		return opMsg{note: "Pinging " + meta.Label() + " again"}
+	}
+}
+
+// toggleAllCmd pauses hosts if any of them is running, or else starts
+// them all again; what says which hosts they are, e.g. "every host".
+func (m *model) toggleAllCmd(hs []*host, what string) tea.Cmd {
+	metas := make([]*monitor.Meta, len(hs))
+	running := false
+	for i, h := range hs {
+		metas[i] = h.meta
+		running = running || h.running
+	}
+	m.busy, m.noteBad = true, false
+	if running {
+		m.note = "Pausing " + what + "…"
+		return func() tea.Msg {
+			paused, err := pauseAll(metas)
+			return opMsg{note: fmt.Sprintf("Paused %d %s; their history is kept", len(paused), plural(len(paused), "host", "hosts")), err: err}
+		}
+	}
+	m.note = "Starting " + what + " again…"
+	a := m.app
+	return func() tea.Msg {
+		started, err := a.resumeAll(metas)
+		return opMsg{note: fmt.Sprintf("Pinging %d %s again", len(started), plural(len(started), "host", "hosts")), err: err}
 	}
 }
 
@@ -954,7 +989,7 @@ func (m *model) allKeys(fits int) []string {
 	if len(hosts) > 1 {
 		hints = append(hints, "↑↓ choose", "shift-↑↓ reorder")
 	}
-	hints = append(hints, "a add", "r remove", "w save", "←→ time", "+/- zoom")
+	hints = append(hints, "a add", "r remove", "w save", "s pause", "←→ time", "+/- zoom")
 	if m.fromPick {
 		hints = append(hints, "esc back")
 	} else {
@@ -1061,6 +1096,14 @@ func (m *model) keyAll(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.showFocus()
 	case "a":
 		return m, m.addMore()
+	case "s":
+		if len(hosts) > 0 {
+			what := "these hosts"
+			if m.viewName != "" {
+				what = m.viewName
+			}
+			return m, m.toggleAllCmd(hosts, what)
+		}
 	case "r":
 		m.remove()
 		return m, nil
@@ -1134,7 +1177,7 @@ func (m *model) renderPick() string {
 		}
 	}
 	count := u.faint(fmt.Sprintf("%d/%d", shown, len(m.hosts)))
-	keys := []string{"enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-s pause", "esc quit"}
+	keys := []string{"enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-s pause", "ctrl-a pause all", "esc quit"}
 	if m.multi {
 		count = u.fg(colAccent, fmt.Sprintf("%d picked ", len(m.picked))) + count
 		keys = []string{"tab pick", "enter graph them", "esc done"}

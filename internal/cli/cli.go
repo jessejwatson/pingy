@@ -82,10 +82,10 @@ func (a *App) Run(args []string) int {
 
 // opts is the parsed command line.
 type opts struct {
-	detach, list, graph, kill, resume, all bool
-	name                                   string
-	interval                               time.Duration
-	targets                                []string
+	detach, list, graph, kill, pause, resume, all bool
+	name                                          string
+	interval                                      time.Duration
+	targets                                       []string
 }
 
 func parseArgs(args []string) (opts, error) {
@@ -113,6 +113,8 @@ func parseArgs(args []string) (opts, error) {
 			o.graph = true
 		case "-k", "--kill":
 			o.kill = true
+		case "-p", "--pause":
+			o.pause = true
 		case "-r", "--resume":
 			o.resume = true
 		case "-a", "--all":
@@ -184,13 +186,13 @@ func (a *App) run(args []string) error {
 		return err
 	}
 	modes := 0
-	for _, on := range []bool{o.list, o.graph, o.kill, o.resume} {
+	for _, on := range []bool{o.list, o.graph, o.kill, o.pause, o.resume} {
 		if on {
 			modes++
 		}
 	}
 	if modes > 1 {
-		return errors.New("use one of -l, -g, -k and -r at a time")
+		return errors.New("use one of -l, -g, -k, -p and -r at a time")
 	}
 	switch {
 	case o.list:
@@ -199,6 +201,8 @@ func (a *App) run(args []string) error {
 		return a.cmdGraph(o.targets)
 	case o.kill:
 		return a.cmdKill(o.targets, o.all)
+	case o.pause:
+		return a.cmdPause(o.targets)
 	case o.resume:
 		return a.cmdResume(o.targets)
 	case len(o.targets) == 0:
@@ -463,12 +467,11 @@ func (a *App) cmdResume(targets []string) error {
 			return nil
 		}
 	}
-	for _, t := range targets {
-		m := monitor.Find(root, t)
-		if m == nil {
-			return fmt.Errorf("nothing called %q has been pinged; start it with pingy %s -d", t, t)
+	if len(targets) > 0 {
+		var err error
+		if list, _, err = a.expand(targets); err != nil {
+			return err
 		}
-		list = append(list, m)
 	}
 	u := a.errUI()
 	for _, m := range list {

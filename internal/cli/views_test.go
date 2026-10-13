@@ -409,3 +409,19 @@ func TestKeyHintsAllShow(t *testing.T) {
 		check("adding", m.renderPick(), "tab add or remove", "enter save", "esc cancel")
 	}
 }
+
+func TestPauseArgs(t *testing.T) {
+	o, err := parseArgs([]string{"-p", "office", "1.1.1.1"})
+	if err != nil || !o.pause || !slices.Equal(o.targets, []string{"office", "1.1.1.1"}) {
+		t.Fatalf("parseArgs = %+v, %v", o, err)
+	}
+	a, _ := testApp(t, "1.1.1.1")
+	var errOut bytes.Buffer
+	a.Stderr = &errOut
+	if code := a.Run([]string{"-p"}); code != 0 || !strings.Contains(errOut.String(), "Nothing is being pinged") {
+		t.Fatalf("pingy -p with nothing running: exit %d, %q", code, errOut.String())
+	}
+	if code := a.Run([]string{"-p", "-k", "1.1.1.1"}); code == 0 {
+		t.Fatal("pingy -p -k worked")
+	}
+}

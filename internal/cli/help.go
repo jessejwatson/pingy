@@ -57,10 +57,13 @@ Usage:
   pingy <host>... -d            Several at once
   pingy -l                      List the hosts being pinged, and saved views
   pingy -g [host...]            Graph every host (or just these), live
-  pingy -g <view>               Graph a saved view's hosts
+  pingy -g <view>               Graph a saved view's hosts; -l, -p and -r
+                                take views too
   pingy -k <host>...            Stop pinging hosts and delete their history
   pingy -k --all                Stop them all
-  pingy -r [host...]            Ping stopped hosts again, e.g. after a restart
+  pingy -p [host...]            Pause hosts (every host by default), keeping
+                                their history; pingy -r pings them again
+  pingy -r [host...]            Ping paused hosts again, e.g. after a restart
 
 Options:
   -d, --detach                  Run in the background
@@ -81,7 +84,9 @@ In the panel:
   type                          Search; enter opens the chosen host or view
   enter on "+ Ping …"           Start pinging what you typed
   ctrl-x · ctrl-s               Stop and delete (a view: just the view) · pause
-                                or resume
+                                or resume (a view: all its hosts)
+  ctrl-a                        Pause every host, or resume them all if none
+                                is running
   ctrl-t                        Pick several hosts: tab picks the chosen one
                                 (or a view's), enter graphs them together, esc
                                 stops picking
@@ -102,6 +107,8 @@ In pingy -g, or hosts picked together, as in a graph, plus:
   ctrl-u ctrl-d                 A screen of hosts at a time
   a · r                         Add or remove hosts · remove the chosen one;
                                 a saved view keeps the change
+  s                             Pause these hosts, or resume them if all are
+                                paused
   w                             Save these hosts as a view, or rename this one
 
 Environment:
