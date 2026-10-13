@@ -40,7 +40,11 @@ pingy 1.1.1.1@jesse@lab.lan -d           # or from anywhere ssh reaches
 pingy -g 1.1.1.1                         # graph it from everywhere at once
 ```
 
-ssh has to reach the machine without a password (a key, or the agent). If
+When ssh can't get in by itself (a machine it hasn't seen before, or one
+that wants a password) pingy shows ssh's prompts in a popup, or right in
+the terminal for `pingy --origin` and `-d`, and keeps that login open for
+every host pinged from there until the last one is stopped. A key
+(`ssh-copy-id`) saves logging in again after the connection drops. If
 pingy is installed there, it pings the host in the background as
 `pingy <host> -d` would, so it carries on while you're away, and the gap is
 filled in when you're back; `pingy -k` here leaves it running there. If it

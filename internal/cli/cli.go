@@ -459,7 +459,7 @@ func (a *App) cmdWatch(target, name string, interval time.Duration) error {
 			return nil
 		}
 		if created {
-			return fresh.Remove()
+			return a.remove(fresh)
 		}
 		fresh.Foreground, fresh.Ephemeral, fresh.OwnerPID = false, false, 0
 		fresh.Save()
@@ -517,7 +517,7 @@ func (a *App) cmdKill(targets []string, all bool) error {
 	u := a.errUI()
 	for _, m := range list {
 		st := m.State()
-		if err := m.Remove(); err != nil {
+		if err := a.remove(m); err != nil {
 			return err
 		}
 		a.done("Stopped pinging %s and deleted its history", u.bold(m.Label()))

@@ -87,8 +87,10 @@ A host is a name or address, e.g. 1.1.1.1, router.lan or example.com. Hosts
 can also be given by their pingy name.
 
 An origin is a machine a host is pinged from: a name saved with --origin,
-or anything ssh takes, e.g. 1.1.1.1@jesse@office.lan. ssh must reach it
-without a password. Where pingy is installed, it pings the host there in
+or anything ssh takes, e.g. 1.1.1.1@jesse@office.lan. When ssh can't get
+in by itself, e.g. it doesn't know the machine yet or wants a password,
+pingy asks you to log in, and keeps that login open for every host pinged
+from there until the last is stopped. Where pingy is installed, it pings the host there in
 the background, so it carries on while you're away and catches up when
 you're back; pingy -k here leaves it running there. Anywhere else, a
 script pings it, only while you're connected.
@@ -106,6 +108,8 @@ In the panel:
   ctrl-a                        Pause every host, or resume them all if none
                                 is running
   ctrl-o                        Set how much history each host keeps
+  ctrl-l                        Log in to the chosen host's origin, e.g. to
+                                accept its key or type a password
   ctrl-t                        Pick several hosts: tab picks the chosen one
                                 (or a view's), enter graphs them together, esc
                                 stops picking
@@ -117,6 +121,7 @@ In a graph:
   home · end                    Oldest · now, following new pings
   + -                           Zoom in and out
   n · p · x                     Rename · pause or resume · stop and delete
+  ctrl-l                        Log in to the host's origin
   esc                           Back
 
 In pingy -g, or hosts picked together, as in a graph, plus:

@@ -44,6 +44,9 @@ func Run(dir string) error {
 	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+	// Meta.Retry's signal, before anything could send it.
+	retry := make(chan os.Signal, 1)
+	signal.Notify(retry, syscall.SIGUSR1)
 
 	up := newUpkeep(dir)
 	out, err := openSamples(m.SamplesPath(), up.limit)
@@ -57,7 +60,7 @@ func Run(dir string) error {
 		return err
 	}
 	if m.Origin != "" {
-		return runRemote(m, up, out, st, stop)
+		return runRemote(m, up, out, st, stop, retry)
 	}
 
 	var addr net.IP

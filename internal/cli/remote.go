@@ -76,17 +76,42 @@ func (a *App) cmdStream(args []string) error {
 }
 
 // awaitRemote waits a little for m, just started, to reach its origin,
-// and returns its state once it has, or has failed to.
-func awaitRemote(m *monitor.Meta) monitor.State {
+// and returns its state once it has, or has failed to and failing counts.
+func awaitRemote(m *monitor.Meta, failing bool) monitor.State {
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		st := m.State()
-		if st.Via != "" || st.Link != "" || time.Now().After(deadline) {
+		if st.Via != "" || failing && st.Link != "" || time.Now().After(deadline) {
 			return st
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// loginWhy explains, for someone about to answer ssh, why it's asking:
+// kind is one of monitor's Login kinds.
+func loginWhy(kind, origin, dest string) string {
+	host := dest
+	if i := strings.LastIndexByte(host, '@'); i >= 0 {
+		host = host[i+1:]
+	}
+	switch kind {
+	case monitor.LoginHostKey:
+		return "ssh hasn't connected to " + origin + " before. Check the key it shows is " + origin +
+			"'s, then type yes to trust it from now on."
+	case monitor.LoginAuth:
+		return origin + " wants a password or a code. Once you've logged in, pingy keeps the login open for every host pinged from there. " +
+			"A key would save logging in again after a disconnect: ssh-copy-id " + dest
+	case monitor.LoginChanged:
+		return origin + "'s host key has CHANGED since ssh last connected. A reinstalled machine does that, but so does someone " +
+			"intercepting the connection, so check with whoever runs it first. Once you're sure, remove the old key with " +
+			"ssh-keygen -R " + host + " and log in again."
+	}
+	return "Log in to " + origin + " (ssh " + dest + "); pingy keeps the login open for every host pinged from there."
+}
+
+// canAnswer says whether logging in by hand would get past kind.
+func canAnswer(kind string) bool { return kind == monitor.LoginHostKey || kind == monitor.LoginAuth }
 
 // reportRemote says how m, just started, is being pinged from its origin.
 func (a *App) reportRemote(m *monitor.Meta) {
@@ -95,12 +120,24 @@ func (a *App) reportRemote(m *monitor.Meta) {
 	if m.Name != "" {
 		what = u.bold(m.Name) + " " + u.faint("("+m.Target+")")
 	}
-	st := awaitRemote(m)
+	dest := monitor.Dest(a.Home, m.Origin)
+	st := awaitRemote(m, true)
+	if st.Link != "" && st.Login != "" && a.Interactive {
+		a.notef("%s", st.Link)
+		a.hint("  %s", loginWhy(st.Login, m.Origin, dest))
+		if canAnswer(st.Login) && a.loginHere(dest) {
+			a.retryOrigin(dest)
+			st = awaitRemote(m, false)
+		}
+	}
 	switch {
 	case st.Link != "":
 		a.notef("Started %s, but %s", u.bold(m.Label()), st.Link)
-		a.hint("  pingy keeps trying. It needs ssh to %s to work without a password: try ssh %s",
-			m.Origin, monitor.Dest(a.Home, m.Origin))
+		if st.Login != "" {
+			a.hint("  pingy keeps trying. Open pingy and press ctrl-l on it to log in.")
+		} else {
+			a.hint("  pingy keeps trying.")
+		}
 	case st.Via == "pingy":
 		a.done("Pinging %s from %s with pingy there, which carries on while you're away", what, m.Origin)
 	case st.Via == "script":
@@ -142,6 +179,7 @@ func (a *App) cmdOrigin(args []string, kill bool) error {
 					n, plural(n, "host is", "hosts are"), list[i].Name, plural(n, "it", "them"))
 			}
 			a.done("Deleted the origin %s", u.bold(list[i].Name))
+			monitor.CloseLogin(a.Home, list[i].Dest)
 			list = append(list[:i], list[i+1:]...)
 		}
 		return monitor.SaveOrigins(a.Home, list)
@@ -211,13 +249,27 @@ func (a *App) listOrigins(list []monitor.Origin) error {
 }
 
 // probeOrigin connects to an origin to say whether pingy can ping from it,
-// and how.
+// and how, logging in there first if ssh needs someone to.
 func (a *App) probeOrigin(name, dest string) error {
+	login, err := a.probe(name, dest)
+	if err != nil && login != "" && a.Interactive {
+		a.notef("%v", err)
+		a.hint("  %s", loginWhy(login, name, dest))
+		if !canAnswer(login) || !a.loginHere(dest) {
+			return exitCode(1)
+		}
+		a.retryOrigin(dest)
+		_, err = a.probe(name, dest)
+	}
+	return err
+}
+
+func (a *App) probe(name, dest string) (login string, err error) {
 	u := a.errUI()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	remote, in := monitor.RemoteCommand("--probe", time.Second, time.Time{})
-	cmd := monitor.SSH(dest, remote, in)
+	cmd := monitor.SSH(a.Home, dest, remote, in)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	done := make(chan struct{})
@@ -241,9 +293,13 @@ func (a *App) probeOrigin(name, dest string) error {
 			why = err.Error()
 		}
 		if ctx.Err() != nil {
-			why = "no answer after 20 seconds"
+			return "", fmt.Errorf("can't reach %s: no answer after 20 seconds", name)
 		}
-		return fmt.Errorf("can't reach %s: %s; pingy needs ssh %s to work without a password", name, why, dest)
+		login = monitor.LoginNeeded(stderr.String())
+		if login == "" {
+			return "", fmt.Errorf("can't reach %s: %s", name, why)
+		}
+		return login, fmt.Errorf("can't log in to %s: %s", name, why)
 	}
 	got := strings.Fields(string(out))
 	switch {
@@ -257,5 +313,5 @@ func (a *App) probeOrigin(name, dest string) error {
 		a.done("%s is reachable, without pingy: hosts are pinged there by a script, only while you're connected",
 			u.bold(name))
 	}
-	return nil
+	return "", nil
 }

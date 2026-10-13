@@ -81,6 +81,9 @@ type model struct {
 	noteBad    bool
 	busy       bool
 
+	login     *loginPopup
+	loginSeen map[string]bool // origins, by ssh destination, whose popup has opened by itself
+
 	quitting bool
 }
 
@@ -108,7 +111,7 @@ func newModel(a *App) *model {
 	m := &model{
 		app: a, u: a.newUI(a.StyleOut), root: a.root(), byID: map[string]*host{}, picked: map[string]bool{},
 		width: a.Width, height: a.Height, query: q, input: in,
-		win: window{step: time.Second, live: true},
+		win: window{step: time.Second, live: true}, loginSeen: map[string]bool{},
 	}
 	m.refresh()
 	return m
@@ -230,6 +233,7 @@ func (m *model) refresh() {
 		m.note, m.noteBad = gone+" was stopped and deleted elsewhere", true
 		m.query.Focus()
 	}
+	m.checkLogins()
 }
 
 func (m *model) Init() tea.Cmd {
@@ -270,7 +274,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.open(h)
 		}
 		return m, nil
+	case loginOutMsg, loginEndMsg:
+		return m.loginMsg(msg)
 	case tea.KeyPressMsg:
+		if m.login != nil {
+			return m.keyLogin(msg)
+		}
+		if msg.String() == "ctrl+l" && m.mode == "" && !m.busy {
+			m.keyLoginOpen()
+			return m, nil
+		}
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
 			return m, tea.Quit
@@ -439,7 +452,7 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			h := m.target
 			m.busy, m.note = true, "Stopping "+h.meta.Label()+"…"
 			return m, func() tea.Msg {
-				return opMsg{note: "Stopped pinging " + h.meta.Label() + " and deleted its history", err: h.meta.Remove()}
+				return opMsg{note: "Stopped pinging " + h.meta.Label() + " and deleted its history", err: m.app.remove(h.meta)}
 			}
 		}
 		m.note = ""
@@ -820,7 +833,7 @@ func (m *model) keyDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.busy, m.note = true, "Stopping "+h.meta.Label()+"…"
 			sess := m.sess
 			return m, func() tea.Msg {
-				err := h.meta.Remove()
+				err := m.app.remove(h.meta)
 				if sess != nil && err == nil {
 					sess.killed = true
 					return opMsg{quit: true}
@@ -1027,6 +1040,9 @@ func (m *model) allKeys(fits int) []string {
 		hints = append(hints, "↑↓ choose", "shift-↑↓ reorder")
 	}
 	hints = append(hints, "a add", "r remove", "w save", "p pause", "←→ time", "+/- zoom")
+	if h := m.chosenHost(); h != nil && needsLogin(h) {
+		hints = append(hints, u.fg(colWarn, "ctrl-l log in"))
+	}
 	if m.fromPick {
 		hints = append(hints, "esc back")
 	} else {
@@ -1175,6 +1191,9 @@ func (m *model) View() tea.View {
 	case viewAll:
 		s = m.renderAll()
 	}
+	if m.login != nil {
+		s = m.overLogin(s)
+	}
 	v := tea.NewView(s)
 	v.AltScreen = true
 	return v
@@ -1215,6 +1234,9 @@ func (m *model) renderPick() string {
 	}
 	count := u.faint(fmt.Sprintf("%d/%d", shown, len(m.hosts)))
 	keys := []string{"enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-p pause", "ctrl-a pause all", "ctrl-o history", "esc quit"}
+	if slices.ContainsFunc(m.hosts, needsLogin) {
+		keys = append([]string{u.fg(colWarn, "ctrl-l log in")}, keys...)
+	}
 	if m.multi {
 		count = u.fg(colAccent, fmt.Sprintf("%d picked ", len(m.picked))) + count
 		keys = []string{"tab pick", "enter graph them", "esc done"}
@@ -1454,6 +1476,9 @@ func (m *model) renderDetail() string {
 		"",
 	}
 	keys := []string{"←→ move", "shift-←→ page", "home/end", "+/- zoom", "n rename", "p pause", "x kill"}
+	if needsLogin(h) {
+		keys = append([]string{u.fg(colWarn, "ctrl-l log in")}, keys...)
+	}
 	switch {
 	case m.mode == "rename":
 		keys = []string{"enter save", "esc cancel", "empty for the address"}

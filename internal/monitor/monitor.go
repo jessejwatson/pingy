@@ -66,6 +66,9 @@ type State struct {
 	// "script", and why it can't be reached, if it can't.
 	Via  string `json:"via,omitempty"`
 	Link string `json:"link,omitempty"`
+	// Login is why ssh couldn't log in there, when it's something someone
+	// can answer at ssh's prompts: LoginHostKey, LoginAuth or LoginChanged.
+	Login string `json:"login,omitempty"`
 }
 
 // Label is the monitor's name, or where it pings when it has none.

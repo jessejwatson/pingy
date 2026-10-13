@@ -3,6 +3,7 @@ package monitor
 import (
 	"bufio"
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -140,24 +142,114 @@ func checkPrintable(s, what string) error {
 	return nil
 }
 
-// SSH runs remote, a command for a POSIX shell, on dest with stdin from
-// in. $PINGY_SSH replaces ssh, e.g. PINGY_SSH="ssh -F ~/.ssh/other".
-func SSH(dest, remote string, in io.Reader) *exec.Cmd {
+// Why ssh couldn't log in to an origin, when it's something a person can
+// answer at ssh's prompts, or must look into first.
+const (
+	LoginHostKey = "hostkey" // ssh doesn't know the machine: accept its key
+	LoginAuth    = "auth"    // it wants a password or a code
+	LoginChanged = "changed" // its key has changed since: check why first
+)
+
+// LoginNeeded reads what ssh printed when it failed, for which of the
+// above it was, if any.
+func LoginNeeded(stderr string) string {
+	switch {
+	case strings.Contains(stderr, "REMOTE HOST IDENTIFICATION HAS CHANGED"):
+		return LoginChanged
+	case strings.Contains(stderr, "Host key verification failed"):
+		return LoginHostKey
+	case strings.Contains(stderr, "Permission denied"),
+		strings.Contains(stderr, "Too many authentication failures"),
+		strings.Contains(stderr, "Authentication failed"):
+		return LoginAuth
+	}
+	return ""
+}
+
+// sshProg is ssh, or $PINGY_SSH, e.g. PINGY_SSH="ssh -F ~/.ssh/other".
+func sshProg() (string, []string) {
 	prog := strings.Fields(os.Getenv("PINGY_SSH"))
 	if len(prog) == 0 {
-		prog = []string{"ssh"}
+		return "ssh", nil
 	}
-	args := append(prog[1:],
+	return prog[0], prog[1:]
+}
+
+// controlPath is where ssh keeps a login made with Login open, for the
+// pingers to share: a socket per machine, named by ssh's hash of it. A
+// socket's path must be short, so a long PINGY_HOME keeps them in /tmp.
+// "" means there's nowhere safe to.
+func controlPath(home string) string {
+	dir := filepath.Join(home, "ssh")
+	if len(dir)+42 > 100 {
+		dir = filepath.Join("/tmp", "pingy-"+strconv.Itoa(os.Getuid()))
+	}
+	os.MkdirAll(dir, 0o700)
+	// Anyone can make a directory in /tmp, so check it's this user's own.
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o077 != 0 || !ownedByMe(fi) {
+		return ""
+	}
+	return filepath.Join(dir, "%C")
+}
+
+func ownedByMe(fi os.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Getuid()
+}
+
+// SSH runs remote, a command for a POSIX shell, on dest with stdin from
+// in, through a login made with Login if there's one open.
+func SSH(home, dest, remote string, in io.Reader) *exec.Cmd {
+	prog, args := sshProg()
+	args = append(args,
 		"-T",
 		// Nobody is there to type a password or accept a host key.
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		// Notice a connection that's gone quiet within about 15 seconds.
-		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
-		"--", dest, remote)
-	cmd := exec.Command(prog[0], args...)
+		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3")
+	if cp := controlPath(home); cp != "" {
+		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath="+cp)
+	}
+	args = append(args, "--", dest, remote)
+	cmd := exec.Command(prog, args...)
 	cmd.Stdin = in
 	return cmd
+}
+
+// Login is ssh logging in to dest for someone to answer its prompts, then
+// staying open in the background, for SSH to connect through without
+// logging in again, until CloseLogin.
+func Login(home, dest string) *exec.Cmd {
+	prog, args := sshProg()
+	args = append(args, "-o", "ConnectTimeout=15", "-f", "-N")
+	if cp := controlPath(home); cp != "" {
+		args = append(args, "-o", "ControlMaster=yes", "-o", "ControlPersist=yes", "-o", "ControlPath="+cp)
+	}
+	return exec.Command(prog, append(args, "--", dest)...)
+}
+
+// CloseLogin ends a login to dest made with Login, if there is one.
+func CloseLogin(home, dest string) {
+	cp := controlPath(home)
+	if cp == "" {
+		return
+	}
+	prog, args := sshProg()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	exec.CommandContext(ctx, prog, append(args, "-o", "ControlPath="+cp, "-O", "exit", "--", dest)...).Run()
+}
+
+// Retry tells a host's monitor, waiting to connect to its origin again,
+// to try now, e.g. once someone has logged in there.
+func (m *Meta) Retry() {
+	if m.Origin != "" && m.Running() {
+		if pid := m.State().PID; pid > 0 {
+			syscall.Kill(pid, syscall.SIGUSR1)
+		}
+	}
 }
 
 // RemoteCommand is the command that streams target's pings from another
@@ -230,7 +322,7 @@ type remoteConn struct {
 
 func dialRemote(home string, m *Meta, since time.Time) (*remoteConn, error) {
 	remote, in := RemoteCommand(m.Target, m.Every(), since)
-	cmd := SSH(Dest(home, m.Origin), remote, in)
+	cmd := SSH(home, Dest(home, m.Origin), remote, in)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -253,8 +345,8 @@ func dialRemote(home string, m *Meta, since time.Time) (*remoteConn, error) {
 func (c *remoteConn) kill() { c.cmd.Process.Kill() }
 
 // end waits for ssh to finish and says why the connection ended, in
-// words for the host's status.
-func (c *remoteConn) end(origin string) string {
+// words for the host's status, and whether logging in would help.
+func (c *remoteConn) end(origin string) (link, login string) {
 	for range c.lines {
 	}
 	err := c.cmd.Wait()
@@ -264,18 +356,22 @@ func (c *remoteConn) end(origin string) string {
 			last = l
 		}
 	}
+	login = LoginNeeded(c.stderr.String())
 	switch {
+	case login == LoginChanged:
+		return origin + "'s host key has changed", login
 	case last != "":
-		return "can't reach " + origin + ": " + last
+		return "can't reach " + origin + ": " + last, login
 	case err != nil:
-		return "can't reach " + origin + ": " + err.Error()
+		return "can't reach " + origin + ": " + err.Error(), login
 	}
-	return "lost the connection to " + origin
+	return "lost the connection to " + origin, login
 }
 
 // runRemote is Run for a host with an origin: it streams the host's pings
 // from there into its samples, connecting again whenever it's cut off.
-func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop <-chan os.Signal) error {
+// A signal on retry cuts short its wait to connect again.
+func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop, retry <-chan os.Signal) error {
 	last := lastSampleTime(m.SamplesPath())
 	save := func(next State) {
 		if next != st {
@@ -289,6 +385,8 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop <-chan os.Si
 			select {
 			case <-stop:
 				return nil
+			case <-retry:
+				wait = 0
 			case <-time.After(wait):
 			}
 		}
@@ -298,12 +396,12 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop <-chan os.Si
 		c, err := dialRemote(up.home, m, last)
 		if err != nil {
 			next := st
-			next.Link = "can't run ssh: " + err.Error()
+			next.Link, next.Login = "can't run ssh: "+err.Error(), ""
 			save(next)
 			wait = min(max(wait*2, 2*time.Second), time.Minute)
 			continue
 		}
-		began, heard := time.Now(), false
+		began, heard, problem := time.Now(), false, ""
 		every, origin := m.Every(), m.Origin
 		tick := time.NewTicker(time.Second)
 	conn:
@@ -334,11 +432,11 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop <-chan os.Si
 				switch l.kind {
 				case 'h':
 					heard = true
-					next.Via, next.Link = l.text, ""
+					next.Via, next.Link, next.Login = l.text, "", ""
 				case '=':
 					next.Addr, next.Error = l.text, ""
 				case '!':
-					next.Error = l.text
+					next.Error, problem = l.text, l.text
 				case 's':
 					s := l.sample
 					if l.now {
@@ -360,7 +458,11 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop <-chan os.Si
 		}
 		tick.Stop()
 		next := st
-		next.Link = c.end(m.Origin)
+		next.Link, next.Login = c.end(m.Origin)
+		if next.Login == "" && problem != "" && strings.HasPrefix(next.Link, "lost the connection") {
+			// It hung up over something it said: say that.
+			next.Link += ": " + problem
+		}
 		save(next)
 		switch {
 		case heard && time.Since(began) > 30*time.Second:

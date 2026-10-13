@@ -153,7 +153,7 @@ echo "- 3000"
 	defer out.close()
 	stop := make(chan os.Signal)
 	done := make(chan error)
-	go func() { done <- runRemote(m, up, out, State{}, stop) }()
+	go func() { done <- runRemote(m, up, out, State{}, stop, nil) }()
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -202,4 +202,76 @@ func TestRemoteScriptParses(t *testing.T) {
 			t.Errorf("%s -n: %v\n%s", sh, err, out)
 		}
 	}
+}
+
+func TestLoginNeeded(t *testing.T) {
+	for stderr, want := range map[string]string{
+		"No ED25519 host key is known for x and you have requested strict checking.\nHost key verification failed.\n": LoginHostKey,
+		"@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n...\nHost key verification failed.\n":     LoginChanged,
+		"jesse@x: Permission denied (publickey,password).\n":                                                          LoginAuth,
+		"ssh: connect to host x port 22: Connection refused\n":                                                        "",
+		"ssh: Could not resolve hostname x: nodename nor servname provided\n":                                         "",
+	} {
+		if got := LoginNeeded(stderr); got != want {
+			t.Errorf("%q = %q, want %q", stderr, got, want)
+		}
+	}
+}
+
+func TestSSHSharesALogin(t *testing.T) {
+	home := t.TempDir()
+	short := "/tmp/" + filepath.Base(home)
+	os.MkdirAll(short, 0o700)
+	defer os.RemoveAll(short)
+	for _, h := range []string{short, home + strings.Repeat("/deeper", 12)} {
+		cp := controlPath(h)
+		if cp == "" || len(cp) > 100 || !strings.HasSuffix(cp, "/%C") {
+			t.Fatalf("control path for %s = %q", h, cp)
+		}
+	}
+	cmd := SSH(short, "office", "true", nil)
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "BatchMode=yes") || !strings.Contains(args, "ControlMaster=no") ||
+		!strings.Contains(args, "ControlPath="+short+"/ssh/%C") || !strings.HasSuffix(args, "-- office true") {
+		t.Fatalf("ssh %s", args)
+	}
+	login := strings.Join(Login(short, "office").Args, " ")
+	if strings.Contains(login, "BatchMode") || !strings.Contains(login, "ControlMaster=yes") ||
+		!strings.Contains(login, "ControlPersist=yes") || !strings.Contains(login, "-f -N") {
+		t.Fatalf("login ssh %s", login)
+	}
+}
+
+// TestRetryCutsTheWaitShort: a monitor waiting to connect again tries at
+// once when told to.
+func TestRetryCutsTheWaitShort(t *testing.T) {
+	home := t.TempDir()
+	fake := filepath.Join(home, "fakessh")
+	os.WriteFile(fake, []byte("#!/bin/sh\necho x >> \"$(dirname \"$0\")/calls\"\necho 'Permission denied (password).' >&2\nexit 255\n"), 0o700)
+	t.Setenv("PINGY_SSH", fake)
+	m, _ := Create(filepath.Join(home, "hosts"), "1.1.1.1", "office", time.Second)
+	up := newUpkeep(m.Dir())
+	out, _ := openSamples(m.SamplesPath(), up.limit)
+	defer out.close()
+	stop, retry := make(chan os.Signal), make(chan os.Signal, 1)
+	done := make(chan error)
+	go func() { done <- runRemote(m, up, out, State{}, stop, retry) }()
+	calls := func() int { b, _ := os.ReadFile(filepath.Join(home, "calls")); return strings.Count(string(b), "\n") }
+	for deadline := time.Now().Add(5 * time.Second); calls() < 1; {
+		if time.Now().After(deadline) {
+			t.Fatal("never connected")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond) // into the 2s wait
+	if st := m.State(); st.Login != LoginAuth || st.Link == "" {
+		t.Fatalf("state %+v", st)
+	}
+	retry <- os.Interrupt
+	time.Sleep(500 * time.Millisecond)
+	if n := calls(); n != 2 {
+		t.Fatalf("%d connections, want 2 straight after the retry", n)
+	}
+	stop <- os.Interrupt
+	<-done
 }

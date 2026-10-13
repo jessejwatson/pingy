@@ -52,6 +52,10 @@ func (u ui) status(h *host, now time.Time) (glyph, word string, c color.Color) {
 	switch {
 	case !h.running:
 		return u.icons.stopped, "stopped", colBorder
+	case h.state.Link != "" && h.state.Login == monitor.LoginChanged:
+		return u.icons.down, "key changed", colBad
+	case h.state.Link != "" && h.state.Login != "":
+		return u.icons.warn, "needs login", colWarn
 	case h.state.Link != "":
 		return u.icons.down, "can't reach", colBad
 	case h.state.Error != "" && h.state.Addr == "":
