@@ -516,3 +516,28 @@ func TestHistoryCommand(t *testing.T) {
 		t.Fatal("pingy --history lots worked")
 	}
 }
+
+// The chosen graph is heavy and marked, not just coloured, so it shows on
+// a light theme and with NO_COLOR.
+func TestChosenGraphStandsOut(t *testing.T) {
+	a, _ := testApp(t, "1.1.1.1", "8.8.8.8")
+	m := newAllModel(a, nil, "", nil)
+	chosen := func() string {
+		for _, l := range strings.Split(m.renderAll(), "\n") {
+			if strings.HasPrefix(l, "┏━ ▸ ") {
+				return strings.Fields(l)[2]
+			}
+		}
+		return ""
+	}
+	if got := chosen(); got != "1.1.1.1" {
+		t.Fatalf("chosen panel = %q; want 1.1.1.1", got)
+	}
+	press(m, "down")
+	if got := chosen(); got != "8.8.8.8" {
+		t.Fatalf("after down, chosen panel = %q; want 8.8.8.8", got)
+	}
+	if n := strings.Count(m.renderAll(), "┏"); n != 1 {
+		t.Fatalf("%d heavy panels; want 1", n)
+	}
+}

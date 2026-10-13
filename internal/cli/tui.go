@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"image/color"
 	"maps"
 	"slices"
 	"strings"
@@ -167,7 +166,7 @@ func (a *App) cmdGraph(filter []string) error {
 	if !a.Interactive {
 		u := a.outUI()
 		for _, h := range hosts {
-			fmt.Fprintln(a.Stdout, strings.Join(u.hostPanel(h, time.Now(), window{step: time.Second, live: true}, a.Width, 12, colBorder), "\n"))
+			fmt.Fprintln(a.Stdout, strings.Join(u.hostPanel(h, time.Now(), window{step: time.Second, live: true}, a.Width, 12, false), "\n"))
 		}
 		return nil
 	}
@@ -1325,7 +1324,7 @@ func (m *model) renderPick() string {
 				"then watch it here.",
 			}, rightW, innerH, colBorder), "\n")
 		default:
-			preview = u.hostPanel(rows[m.cursor].h, now, window{step: time.Second, live: true}, rightW, innerH, colBorder)
+			preview = u.hostPanel(rows[m.cursor].h, now, window{step: time.Second, live: true}, rightW, innerH, false)
 		}
 		for i := range lines {
 			p := ""
@@ -1365,8 +1364,9 @@ func (m *model) viewPreview(v *savedView, w, hgt int) []string {
 }
 
 // hostPanel draws h's recent graph in a w×hgt box, as the picker's preview
-// and in pingy -g.
-func (u ui) hostPanel(h *host, now time.Time, win window, w, hgt int, border color.Color) []string {
+// and in pingy -g. The chosen one of several is heavier and marked, so it
+// stands out whatever the theme.
+func (u ui) hostPanel(h *host, now time.Time, win window, w, hgt int, chosen bool) []string {
 	inner := w - 4
 	end := win.endAt(now)
 	step := fitStep(win.step, h.meta.Every())
@@ -1378,7 +1378,10 @@ func (u ui) hostPanel(h *host, now time.Time, win window, w, hgt int, border col
 	if g := u.graph(h.samples(), end, step, inner, hgt-2-len(lines)); g != nil {
 		lines = append(lines, g...)
 	}
-	return strings.Split(u.box(u.accent(h.meta.Label()), lines, w, hgt, border), "\n")
+	if chosen {
+		return strings.Split(u.frame(u.accent("▸ "+h.meta.Label()), lines, w, hgt, colAccent, heavyEdges), "\n")
+	}
+	return strings.Split(u.box(u.accent(h.meta.Label()), lines, w, hgt, colBorder), "\n")
 }
 
 // statusLine is a host's status, address and interval.
@@ -1506,11 +1509,8 @@ func (m *model) renderAll() string {
 	ph, fits := m.allLayout()
 	m.showFocus() // stay in range when hosts go or the screen grows
 	for i := m.scroll; i < len(hosts) && i < m.scroll+fits; i++ {
-		border := colBorder
-		if i == m.focus && len(hosts) > 1 {
-			border = colAccent
-		}
-		lines = append(lines, u.hostPanel(hosts[i], now, m.win, W, ph, border)...)
+		chosen := i == m.focus && len(hosts) > 1
+		lines = append(lines, u.hostPanel(hosts[i], now, m.win, W, ph, chosen)...)
 	}
 	keys := m.allKeys(fits)
 	for len(lines) < H-len(keys) {

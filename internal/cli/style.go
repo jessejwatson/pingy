@@ -100,9 +100,23 @@ func (u ui) icon(glyph string, c color.Color) string {
 	return u.fg(c, glyph) + " "
 }
 
+// edges are the characters a box is drawn with.
+type edges struct{ tl, tr, bl, br, h, v string }
+
+var (
+	roundEdges = edges{"╭", "╮", "╰", "╯", "─", "│"}
+	// heavyEdges mark the chosen panel by shape as well as colour, since
+	// a thin coloured line can be hard to tell from grey on a light theme.
+	heavyEdges = edges{"┏", "┓", "┗", "┛", "━", "┃"}
+)
+
 // box draws lines in a rounded box exactly w wide and h tall (h <= 0 fits
 // the lines), with title set into the top border as fzf labels are.
 func (u ui) box(title string, lines []string, w, h int, border color.Color) string {
+	return u.frame(title, lines, w, h, border, roundEdges)
+}
+
+func (u ui) frame(title string, lines []string, w, h int, border color.Color, e edges) string {
 	inner := max(w-4, 1)
 	if h <= 0 {
 		h = len(lines) + 2
@@ -112,18 +126,18 @@ func (u ui) box(title string, lines []string, w, h int, border color.Color) stri
 	// The title keeps its own styling; only the rule is the border colour.
 	if title != "" {
 		title = ansi.Truncate(" "+title+" ", max(w-5, 0), "…")
-		b.WriteString(edge("╭─") + title + edge(strings.Repeat("─", max(w-3-lipgloss.Width(title), 0))+"╮"))
+		b.WriteString(edge(e.tl+e.h) + title + edge(strings.Repeat(e.h, max(w-3-lipgloss.Width(title), 0))+e.tr))
 	} else {
-		b.WriteString(edge("╭" + strings.Repeat("─", max(w-2, 0)) + "╮"))
+		b.WriteString(edge(e.tl + strings.Repeat(e.h, max(w-2, 0)) + e.tr))
 	}
 	for i := 0; i < h-2; i++ {
 		l := ""
 		if i < len(lines) {
 			l = lines[i]
 		}
-		b.WriteString("\n" + edge("│") + " " + fit(l, inner) + " " + edge("│"))
+		b.WriteString("\n" + edge(e.v) + " " + fit(l, inner) + " " + edge(e.v))
 	}
-	b.WriteString("\n" + edge("╰"+strings.Repeat("─", max(w-2, 0))+"╯"))
+	b.WriteString("\n" + edge(e.bl+strings.Repeat(e.h, max(w-2, 0))+e.br))
 	return b.String()
 }
 
