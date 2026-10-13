@@ -1,6 +1,7 @@
 // Package monitor keeps hosts pinged in the background and records every
 // reply, so pingy can list and graph them later.
 //
+//	~/.config/pingy/settings.json   how much history each host keeps
 //	~/.config/pingy/hosts/
 //	  .seq                   last monitor number handed out
 //	  <id>/meta.json         what to ping and what it's called (pingy's side)
@@ -131,6 +132,30 @@ func (m *Meta) Stop() error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("%s is still running after being told to stop", m.Label())
+}
+
+// HistorySize is how much disk the monitor's samples take.
+func (m *Meta) HistorySize() int64 {
+	fi, err := os.Stat(m.SamplesPath())
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
+}
+
+// TrimHistory cuts a stopped monitor's samples to fit limit; a running
+// monitor trims its own when it next pings.
+func (m *Meta) TrimHistory(limit int64) {
+	f, err := os.OpenFile(m.lockPath(), os.O_RDONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	trim(m.SamplesPath(), limit)
 }
 
 // Remove stops the monitor and deletes it with its history.

@@ -23,12 +23,16 @@ pingy                            # the panel
 pingy -k cloudflare              # stop one and delete its history
 pingy -p                         # pause them all, keeping their history
 pingy -r                         # start stopped ones again, e.g. after a restart
+pingy --history                  # how much disk history takes
+pingy --history 128M             # keep up to 128 MB per host
 ```
 
 Each host is pinged by its own small background process, which uses the
 system's `ping`, so no special privileges are needed. Every result is kept in
-`~/.config/pingy/hosts/<n>/samples` (about 15 days at one ping a second
-before the oldest half is dropped). `pingy --help` lists every key and option.
+`~/.config/pingy/hosts/<n>/samples`, up to 32 MB per host by default (about
+two weeks at one ping a second); past that, the oldest quarter is dropped.
+The panel shows how much it all takes; change the limit there with ctrl-o, or
+with `pingy --history <size>`. `pingy --help` lists every key and option.
 
 pingy shares its look with [macro-master](https://github.com/jessejwatson/macro-master):
 the terminal's own 16 colours, rounded panels, and plain output when piped or

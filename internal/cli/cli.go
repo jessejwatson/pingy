@@ -82,10 +82,10 @@ func (a *App) Run(args []string) int {
 
 // opts is the parsed command line.
 type opts struct {
-	detach, list, graph, kill, pause, resume, all bool
-	name                                          string
-	interval                                      time.Duration
-	targets                                       []string
+	detach, list, graph, kill, pause, resume, all, history bool
+	name                                                   string
+	interval                                               time.Duration
+	targets                                                []string
 }
 
 func parseArgs(args []string) (opts, error) {
@@ -119,6 +119,11 @@ func parseArgs(args []string) (opts, error) {
 			o.resume = true
 		case "-a", "--all":
 			o.all = true
+		case "--history":
+			o.history = true
+			if hasInline {
+				o.targets = append(o.targets, inline)
+			}
 		case "-n", "--name", "-i", "--interval":
 			v := inline
 			if !hasInline {
@@ -186,13 +191,13 @@ func (a *App) run(args []string) error {
 		return err
 	}
 	modes := 0
-	for _, on := range []bool{o.list, o.graph, o.kill, o.pause, o.resume} {
+	for _, on := range []bool{o.list, o.graph, o.kill, o.pause, o.resume, o.history} {
 		if on {
 			modes++
 		}
 	}
 	if modes > 1 {
-		return errors.New("use one of -l, -g, -k, -p and -r at a time")
+		return errors.New("use one of -l, -g, -k, -p, -r and --history at a time")
 	}
 	switch {
 	case o.list:
@@ -205,6 +210,8 @@ func (a *App) run(args []string) error {
 		return a.cmdPause(o.targets)
 	case o.resume:
 		return a.cmdResume(o.targets)
+	case o.history:
+		return a.cmdHistory(o.targets)
 	case len(o.targets) == 0:
 		if o.detach || o.name != "" || o.interval != 0 {
 			return errors.New("say which host to ping, e.g. pingy 1.1.1.1 -d")

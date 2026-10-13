@@ -48,10 +48,11 @@ type model struct {
 	u    ui
 	root string
 
-	hosts []*host
-	byID  map[string]*host
-	only  map[string]bool // pingy -g with hosts named: just these
-	views []savedView
+	hosts    []*host
+	byID     map[string]*host
+	settings monitor.Settings
+	only     map[string]bool // pingy -g with hosts named: just these
+	views    []savedView
 
 	width, height int
 	view          viewKind
@@ -73,7 +74,7 @@ type model struct {
 	before   map[string]bool // what was picked then, for esc to go back to
 	wasMulti bool            // and whether the picker was picking several
 
-	mode       string // "", "rename", "save" or "kill"
+	mode       string // "", "rename", "save", "kill" or "history"
 	target     *host  // what ctrl-x in the picker would kill
 	targetView string // or the view it would delete
 	input      textinput.Model
@@ -192,6 +193,7 @@ func (m *model) refresh() {
 	if vs, err := m.app.loadViews(); err == nil {
 		m.views = vs
 	}
+	m.settings, _ = monitor.LoadSettings(m.app.Home)
 	var hosts []*host
 	seen := map[string]*host{}
 	for _, meta := range monitor.List(m.root) {
@@ -444,6 +446,35 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.note = ""
 		return m, nil
 	}
+	if m.mode == "history" {
+		switch k {
+		case "esc":
+			m.mode = ""
+			m.input.Blur()
+			return m, m.query.Focus()
+		case "enter":
+			mb, err := monitor.ParseSize(m.input.Value())
+			if err != nil {
+				m.note, m.noteBad = err.Error(), true
+				return m, nil
+			}
+			m.mode = ""
+			m.input.Blur()
+			m.busy, m.note = true, "Saving…"
+			a := m.app
+			return m, tea.Batch(m.query.Focus(), func() tea.Msg {
+				return opMsg{
+					note: "Each host now keeps up to " + monitor.FormatMB(mb) + " of history, " +
+						fmtKeeps(monitor.Settings{HistoryMB: mb}) + " at one ping a second",
+					err: a.setHistory(mb),
+				}
+			})
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.note = ""
+		return m, cmd
+	}
 	if m.adding {
 		switch k {
 		case "enter":
@@ -561,6 +592,13 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.toggleAllCmd(m.hosts, "every host")
 		}
 		return m, nil
+	case "ctrl+o":
+		m.mode, m.note = "history", ""
+		m.input.SetValue(monitor.FormatMB(m.settings.HistoryMB))
+		m.input.Placeholder = "e.g. 64M or 1G"
+		m.input.CursorEnd()
+		m.query.Blur()
+		return m, m.input.Focus()
 	}
 	before := m.query.Value()
 	var cmd tea.Cmd
@@ -1177,7 +1215,7 @@ func (m *model) renderPick() string {
 		}
 	}
 	count := u.faint(fmt.Sprintf("%d/%d", shown, len(m.hosts)))
-	keys := []string{"enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-p pause", "ctrl-a pause all", "esc quit"}
+	keys := []string{"enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-p pause", "ctrl-a pause all", "ctrl-o history", "esc quit"}
 	if m.multi {
 		count = u.fg(colAccent, fmt.Sprintf("%d picked ", len(m.picked))) + count
 		keys = []string{"tab pick", "enter graph them", "esc done"}
@@ -1262,10 +1300,14 @@ func (m *model) renderPick() string {
 	}
 	left = append(left, m.noteLine())
 	switch {
+	case m.mode == "history":
+		left[len(left)-1] = u.fg(colAccent, "History per host: ") + m.input.View()
 	case m.mode == "kill" && m.targetView != "":
 		left[len(left)-1] = u.fg(colBad, "Delete the view "+m.targetView+"? Its hosts keep pinging. y/n")
 	case m.mode == "kill" && m.target != nil:
 		left[len(left)-1] = u.fg(colBad, "Stop pinging "+m.target.meta.Label()+" and delete its history? y/n")
+	case m.note == "" && len(m.hosts) > 0:
+		left[len(left)-1] = u.faint(m.historyLine())
 	}
 
 	lines := left
@@ -1294,6 +1336,15 @@ func (m *model) renderPick() string {
 		}
 	}
 	return u.box(u.accent("pingy"), lines, W, H, colBorder)
+}
+
+// historyLine says how much disk the hosts' history takes.
+func (m *model) historyLine() string {
+	var used int64
+	for _, h := range m.hosts {
+		used += h.hist.Size()
+	}
+	return monitor.FormatBytes(used) + " of history · up to " + monitor.FormatMB(m.settings.HistoryMB) + " per host"
 }
 
 // viewPreview lists a saved view's hosts, as the picker's preview.
@@ -1386,7 +1437,7 @@ func (m *model) renderDetail() string {
 	span := fmtSpan(start, end)
 	lines := []string{
 		spread(u.accent(h.meta.Label())+"  "+u.statusLine(h, now), u.lastRTT(h), innerW),
-		spread(u.faint(span+" · "+fmtStep(step)+" per column"), when, innerW),
+		spread(u.faint(span+" · "+fmtStep(step)+" per column · "+monitor.FormatBytes(h.hist.Size())+" of history"), when, innerW),
 		"",
 	}
 	keys := []string{"←→ move", "shift-←→ page", "home/end", "+/- zoom", "n rename", "p pause", "x kill"}

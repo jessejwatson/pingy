@@ -1,13 +1,16 @@
 package monitor
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -16,9 +19,6 @@ import (
 )
 
 const (
-	// trimAt is when the samples file is cut back to its newest half:
-	// about 15 days at one ping a second.
-	trimAt = 32 << 20
 	// resolveEvery is how often a host name is looked up again.
 	resolveEvery = 5 * time.Minute
 	// maxTimeout caps how long a ping waits for its reply.
@@ -44,7 +44,11 @@ func Run(dir string) error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 
-	trim(m.SamplesPath())
+	// The monitor lives in <home>/hosts/<id>.
+	home := filepath.Dir(filepath.Dir(dir))
+	limit := historyLimit(home)
+	settingsMod := modTime(settingsPath(home))
+	trim(m.SamplesPath(), limit)
 	out, err := os.OpenFile(m.SamplesPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -58,7 +62,7 @@ func Run(dir string) error {
 
 	var addr net.IP
 	var resolved time.Time
-	metaMod := modTime(dir)
+	metaMod := modTime(filepath.Join(dir, "meta.json"))
 	written := int64(0)
 	if fi, err := out.Stat(); err == nil {
 		written = fi.Size()
@@ -66,11 +70,16 @@ func Run(dir string) error {
 	next := time.Now()
 	for {
 		// pingy changes meta.json to rename or detach a monitor.
-		if mt := modTime(dir); !mt.Equal(metaMod) {
+		if mt := modTime(filepath.Join(dir, "meta.json")); !mt.Equal(metaMod) {
 			metaMod = mt
 			if fresh, err := m.Reload(); err == nil {
 				m = fresh
 			}
+		}
+		// and settings.json to change how much history is kept.
+		if mt := modTime(settingsPath(home)); !mt.Equal(settingsMod) {
+			settingsMod = mt
+			limit = historyLimit(home)
 		}
 		if m.Foreground && !alive(m.OwnerPID) {
 			if m.Ephemeral {
@@ -104,9 +113,9 @@ func Run(dir string) error {
 		}
 		n, _ := out.Write(formatSample(Sample{At: sent, RTT: rtt}))
 		written += int64(n)
-		if written > trimAt {
+		if written > limit {
 			out.Close()
-			trim(m.SamplesPath())
+			trim(m.SamplesPath(), limit)
 			if out, err = os.OpenFile(m.SamplesPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err != nil {
 				return err
 			}
@@ -134,31 +143,52 @@ func Run(dir string) error {
 	}
 }
 
-func modTime(dir string) time.Time {
-	fi, err := os.Stat(dir + "/meta.json")
+func modTime(path string) time.Time {
+	fi, err := os.Stat(path)
 	if err != nil {
 		return time.Time{}
 	}
 	return fi.ModTime()
 }
 
-// trim cuts the samples file at path back to its newest half once it
-// reaches trimAt.
-func trim(path string) {
-	b, err := os.ReadFile(path)
-	if err != nil || len(b) < trimAt {
+// historyLimit is how big each samples file may grow; a settings file
+// that can't be read keeps the default.
+func historyLimit(home string) int64 {
+	s, err := LoadSettings(home)
+	if err != nil {
+		return Settings{HistoryMB: DefaultHistoryMB}.HistoryBytes()
+	}
+	return s.HistoryBytes()
+}
+
+// trim cuts the samples file at path back to its newest three quarters of
+// limit once it's grown past limit, so a trim needn't happen often.
+func trim(path string, limit int64) {
+	f, err := os.Open(path)
+	if err != nil {
 		return
 	}
-	b = b[len(b)/2:]
-	for i, c := range b {
-		if c == '\n' {
-			b = b[i+1:]
-			break
-		}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.Size() <= limit {
+		return
 	}
-	tmp := path + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		os.Rename(tmp, path)
+	if _, err := f.Seek(fi.Size()-limit*3/4, io.SeekStart); err != nil {
+		return
+	}
+	r := bufio.NewReader(f)
+	if _, err := r.ReadSlice('\n'); err != nil && !errors.Is(err, bufio.ErrBufferFull) {
+		return
+	}
+	tmp, err := os.OpenFile(path+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	_, err = io.Copy(tmp, r)
+	if cerr := tmp.Close(); err == nil && cerr == nil {
+		os.Rename(tmp.Name(), path)
+	} else {
+		os.Remove(tmp.Name())
 	}
 }
 

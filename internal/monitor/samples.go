@@ -78,6 +78,9 @@ func NewHistory(path string, tail int64) *History {
 	return &History{Path: path, tail: tail}
 }
 
+// Size is how big the file was when last refreshed.
+func (h *History) Size() int64 { return h.size }
+
 // Full says whether the whole file has been read.
 func (h *History) Full() bool { return h.tail <= 0 }
 
@@ -93,7 +96,7 @@ func (h *History) LoadAll() {
 func (h *History) Refresh() {
 	f, err := os.Open(h.Path)
 	if err != nil {
-		h.Samples, h.offset = nil, 0
+		h.Samples, h.offset, h.size = nil, 0, 0
 		return
 	}
 	defer f.Close()

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -460,5 +461,58 @@ func TestPIsPause(t *testing.T) {
 	press(m, "p")
 	if !m.busy {
 		t.Fatal("p doesn't pause in the graphs")
+	}
+}
+
+func TestHistorySizeInThePanel(t *testing.T) {
+	a, ms := testApp(t, "1.1.1.1")
+	os.WriteFile(ms[0].SamplesPath(), bytes.Repeat([]byte("1700000000000 1000\n"), 1000), 0o600)
+	m := newPickModel(a)
+	if out := m.renderPick(); !strings.Contains(out, "19 KB of history · up to 32 MB per host") {
+		t.Fatalf("panel doesn't show history use:\n%s", out)
+	}
+	press(m, "ctrl+o")
+	if m.mode != "history" {
+		t.Fatal("ctrl-o doesn't ask for the history size")
+	}
+	press(m, "esc")
+	if m.mode != "" {
+		t.Fatal("esc doesn't cancel")
+	}
+	press(m, "ctrl+o", "ctrl+u")
+	typeText(m, "1G")
+	_, cmd := m.Update(key("enter"))
+	if cmd == nil || !m.busy {
+		t.Fatalf("enter didn't save: note %q", m.note)
+	}
+	m.busy, m.note = false, ""
+	// The command isn't run here, so set it as it would.
+	if err := a.setHistory(1024); err != nil {
+		t.Fatal(err)
+	}
+	m.refresh()
+	if out := m.renderPick(); !strings.Contains(out, "up to 1 GB per host") {
+		t.Fatalf("panel doesn't show the new limit:\n%s", out)
+	}
+}
+
+func TestHistoryCommand(t *testing.T) {
+	a, ms := testApp(t, "1.1.1.1")
+	os.WriteFile(ms[0].SamplesPath(), bytes.Repeat([]byte("1700000000000 1000\n"), 100_000), 0o600)
+	var out bytes.Buffer
+	a.Stdout = &out
+	if code := a.Run([]string{"--history"}); code != 0 || !strings.Contains(out.String(), "1.8 MB of history across 1 host") ||
+		!strings.Contains(out.String(), "up to 32 MB, about 14–19 days") {
+		t.Fatalf("pingy --history: exit %d, %q", code, out.String())
+	}
+	// Lowering it trims a paused host straight away.
+	if code := a.Run([]string{"--history=1"}); code != 0 {
+		t.Fatal("pingy --history=1 failed")
+	}
+	if n := ms[0].HistorySize(); n > 3<<18 || n < 3<<18-30 {
+		t.Fatalf("paused host's history is %d bytes after lowering the limit", n)
+	}
+	if code := a.Run([]string{"--history", "lots"}); code == 0 {
+		t.Fatal("pingy --history lots worked")
 	}
 }
