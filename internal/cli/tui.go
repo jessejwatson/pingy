@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"image/color"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -22,7 +24,7 @@ type viewKind int
 const (
 	viewPick   viewKind = iota // pingy: search and preview
 	viewDetail                 // one host's graph
-	viewAll                    // pingy -g: every host's graph
+	viewAll                    // pingy -g, or the hosts picked in pingy: their graphs
 )
 
 // window is the stretch of time a graph shows: one column per step,
@@ -49,25 +51,35 @@ type model struct {
 	hosts []*host
 	byID  map[string]*host
 	only  map[string]bool // pingy -g with hosts named: just these
+	views []savedView
 
 	width, height int
 	view          viewKind
 
-	query  textinput.Model // the picker's search
-	cursor int
+	query    textinput.Model // the picker's search
+	cursor   int
+	multi    bool            // picking several hosts to graph together
+	picked   map[string]bool // the hosts picked, by ID
+	viewName string          // the saved view the picked hosts came from
 
 	cur      *host // the host whose graph is open
 	win      window
-	sess     *session // pingy <host>: the host being watched
-	fromPick bool
-	scroll   int // pingy -g: first panel shown
+	sess     *session        // pingy <host>: the host being watched
+	fromPick bool            // opened from the picker, so esc goes back to it
+	scroll   int             // pingy -g: first panel shown
+	focus    int             // pingy -g: the panel chosen, which shift-↑↓ moves
+	order    []string        // pingy -g: host IDs in the order to show them
+	adding   bool            // in the picker from a's "add or remove hosts"
+	before   map[string]bool // what was picked then, for esc to go back to
+	wasMulti bool            // and whether the picker was picking several
 
-	mode    string // "", "rename" or "kill"
-	target  *host  // what ctrl-x in the picker would kill
-	input   textinput.Model
-	note    string
-	noteBad bool
-	busy    bool
+	mode       string // "", "rename", "save" or "kill"
+	target     *host  // what ctrl-x in the picker would kill
+	targetView string // or the view it would delete
+	input      textinput.Model
+	note       string
+	noteBad    bool
+	busy       bool
 
 	quitting bool
 }
@@ -94,7 +106,7 @@ func newModel(a *App) *model {
 	in.Prompt = ""
 	in.CharLimit = 40
 	m := &model{
-		app: a, u: a.newUI(a.StyleOut), root: a.root(), byID: map[string]*host{},
+		app: a, u: a.newUI(a.StyleOut), root: a.root(), byID: map[string]*host{}, picked: map[string]bool{},
 		width: a.Width, height: a.Height, query: q, input: in,
 		win: window{step: time.Second, live: true},
 	}
@@ -117,9 +129,10 @@ func newDetailModel(a *App, s *session) *model {
 	return m
 }
 
-func newAllModel(a *App, only map[string]bool) *model {
+func newAllModel(a *App, only map[string]bool, viewName string, order []string) *model {
 	m := newModel(a)
-	m.view, m.only = viewAll, only
+	m.view, m.only, m.viewName, m.order = viewAll, only, viewName, order
+	m.refresh() // drop the hosts not asked for
 	for _, h := range m.hosts {
 		h.hist.LoadAll()
 		h.hist.Refresh()
@@ -153,22 +166,32 @@ func (a *App) cmdGraph(filter []string) error {
 	if !a.Interactive {
 		u := a.outUI()
 		for _, h := range hosts {
-			fmt.Fprintln(a.Stdout, strings.Join(u.hostPanel(h, time.Now(), window{step: time.Second, live: true}, a.Width, 12), "\n"))
+			fmt.Fprintln(a.Stdout, strings.Join(u.hostPanel(h, time.Now(), window{step: time.Second, live: true}, a.Width, 12, colBorder), "\n"))
 		}
 		return nil
 	}
 	var only map[string]bool
+	var order []string
+	viewName := ""
 	if len(filter) > 0 {
 		only = map[string]bool{}
 		for _, h := range hosts {
 			only[h.meta.ID] = true
+			order = append(order, h.meta.ID)
+		}
+		// Saving pingy -g <view> updates that view.
+		if _, views, _ := a.expand(filter); len(filter) == 1 && len(views) == 1 {
+			viewName = views[0]
 		}
 	}
-	return a.runTUI(newAllModel(a, only))
+	return a.runTUI(newAllModel(a, only, viewName, order))
 }
 
 // refresh reads the monitors again and whatever they've pinged since.
 func (m *model) refresh() {
+	if vs, err := m.app.loadViews(); err == nil {
+		m.views = vs
+	}
 	var hosts []*host
 	seen := map[string]*host{}
 	for _, meta := range monitor.List(m.root) {
@@ -189,6 +212,11 @@ func (m *model) refresh() {
 		seen[meta.ID] = h
 	}
 	m.hosts, m.byID = hosts, seen
+	for id := range m.picked {
+		if seen[id] == nil {
+			delete(m.picked, id)
+		}
+	}
 	if m.cur != nil && seen[m.cur.meta.ID] == nil {
 		gone := m.cur.meta.Label()
 		m.cur = nil
@@ -259,7 +287,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	var cmd tea.Cmd
-	if m.mode == "rename" {
+	if m.mode == "rename" || m.mode == "save" {
 		m.input, cmd = m.input.Update(msg)
 	} else if m.view == viewPick {
 		m.query, cmd = m.query.Update(msg)
@@ -276,6 +304,46 @@ func (m *model) open(h *host) {
 	m.query.Blur()
 }
 
+// openPicked shows the picked hosts' graphs together, as pingy -g does.
+func (m *model) openPicked() {
+	m.view, m.mode, m.fromPick, m.scroll, m.focus = viewAll, "", true, 0, 0
+	for _, h := range m.panels() {
+		h.hist.LoadAll()
+		h.hist.Refresh()
+	}
+	m.win = window{step: time.Second, live: true}
+	m.query.Blur()
+}
+
+// viewHosts are the hosts of v still being pinged, and how many aren't.
+func (m *model) viewHosts(v *savedView) (hs []*host, gone int) {
+	metas := make([]*monitor.Meta, len(m.hosts))
+	for i, h := range m.hosts {
+		metas[i] = h.meta
+	}
+	found, gone := v.resolve(metas)
+	for _, meta := range found {
+		hs = append(hs, m.byID[meta.ID])
+	}
+	return hs, gone
+}
+
+// openView graphs a saved view's hosts together.
+func (m *model) openView(v *savedView) {
+	hs, _ := m.viewHosts(v)
+	if len(hs) == 0 {
+		m.note, m.noteBad = "None of "+v.Name+"'s hosts are being pinged any more", true
+		return
+	}
+	m.picked, m.order = map[string]bool{}, nil
+	for _, h := range hs {
+		m.picked[h.meta.ID] = true
+		m.order = append(m.order, h.meta.ID)
+	}
+	m.note, m.viewName = "", v.Name
+	m.openPicked()
+}
+
 // fitStep is the first zoom step at least step and every, so a column
 // never stands for less time than there is between pings.
 func fitStep(step, every time.Duration) time.Duration {
@@ -289,9 +357,11 @@ func fitStep(step, every time.Duration) time.Duration {
 
 // ---- picker ----
 
-// pickRow is a host, or, with add set, the offer to start pinging it.
+// pickRow is a host, a saved view, or, with add set, the offer to start
+// pinging it.
 type pickRow struct {
 	h   *host
+	v   *savedView
 	add string
 }
 
@@ -301,6 +371,19 @@ func (m *model) rows() []pickRow {
 	// letters in order, as in fzf.
 	var rows, loose []pickRow
 	exact := false
+	for i := range m.views {
+		v := &m.views[i]
+		name := strings.ToLower(v.Name)
+		switch {
+		case strings.Contains(name, q):
+			rows = append(rows, pickRow{v: v})
+		case fuzzy(name, q):
+			loose = append(loose, pickRow{v: v})
+		}
+		if name == q {
+			exact = true
+		}
+	}
 	for _, h := range m.hosts {
 		var fields []string
 		for _, f := range []string{h.meta.Name, h.meta.Target, h.state.Addr} {
@@ -343,6 +426,14 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
 	if m.mode == "kill" {
 		m.mode = ""
+		if (k == "y" || k == "Y") && m.targetView != "" {
+			m.note, m.noteBad = "Deleted the view "+m.targetView+"; its hosts are still pinged", false
+			if err := m.app.deleteView(m.targetView); err != nil {
+				m.note, m.noteBad = err.Error(), true
+			}
+			m.refresh()
+			return m, nil
+		}
 		if (k == "y" || k == "Y") && m.target != nil {
 			h := m.target
 			m.busy, m.note = true, "Stopping "+h.meta.Label()+"…"
@@ -353,6 +444,56 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.note = ""
 		return m, nil
 	}
+	if m.adding {
+		switch k {
+		case "enter":
+			if len(m.picked) == 0 {
+				m.note, m.noteBad = "Pick at least one host", true
+				return m, nil
+			}
+			m.adding, m.multi, m.before, m.note = false, m.wasMulti, nil, ""
+			m.openPicked()
+			m.saveOrder()
+			return m, nil
+		case "esc":
+			if m.query.Value() == "" {
+				m.adding, m.multi, m.picked, m.before, m.note = false, m.wasMulti, m.before, nil, ""
+				m.openPicked()
+				return m, nil
+			}
+		case "ctrl+t":
+			return m, nil
+		}
+	}
+	if m.multi {
+		switch k {
+		case "tab", "shift+tab":
+			if len(rows) > 0 {
+				m.togglePick(rows[m.cursor])
+			}
+			if k == "tab" {
+				m.cursor = min(m.cursor+1, max(len(rows)-1, 0))
+			} else {
+				m.cursor = max(m.cursor-1, 0)
+			}
+			return m, nil
+		case "enter":
+			if len(m.picked) == 0 && len(rows) > 0 && rows[m.cursor].h != nil {
+				m.picked[rows[m.cursor].h.meta.ID] = true
+			}
+			if len(m.picked) > 0 {
+				m.note = ""
+				m.openPicked()
+				return m, nil
+			}
+		case "esc":
+			if m.query.Value() == "" {
+				m.multi = false
+				m.clearPicks()
+				return m, nil
+			}
+		}
+	}
 	switch k {
 	case "esc":
 		if m.query.Value() != "" {
@@ -362,6 +503,10 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.quitting = true
 		return m, tea.Quit
+	case "ctrl+t":
+		m.multi, m.note = !m.multi, ""
+		m.clearPicks()
+		return m, nil
 	case "up", "ctrl+p", "ctrl+k", "shift+tab":
 		m.cursor = max(m.cursor-1, 0)
 		return m, nil
@@ -379,6 +524,10 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		r := rows[m.cursor]
+		if r.v != nil {
+			m.openView(r.v)
+			return m, nil
+		}
 		if r.add != "" {
 			m.busy, m.note, m.noteBad = true, "Starting "+r.add+"…", false
 			m.query.SetValue("")
@@ -389,8 +538,11 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.open(r.h)
 		return m, nil
 	case "ctrl+x":
-		if len(rows) > 0 && rows[m.cursor].h != nil {
-			m.mode, m.target = "kill", rows[m.cursor].h
+		if len(rows) > 0 && (rows[m.cursor].h != nil || rows[m.cursor].v != nil) {
+			m.mode, m.target, m.targetView = "kill", rows[m.cursor].h, ""
+			if v := rows[m.cursor].v; v != nil {
+				m.targetView = v.Name
+			}
 		}
 		return m, nil
 	case "ctrl+s":
@@ -407,6 +559,32 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cursor, m.note = 0, ""
 	}
 	return m, cmd
+}
+
+// clearPicks forgets the hosts picked, and their view and order.
+func (m *model) clearPicks() {
+	m.picked, m.viewName, m.order = map[string]bool{}, "", nil
+}
+
+// togglePick picks or unpicks a host, or a view's hosts all together.
+func (m *model) togglePick(r pickRow) {
+	hs := []*host{r.h}
+	if r.v != nil {
+		hs, _ = m.viewHosts(r.v)
+	} else if r.h == nil {
+		return
+	}
+	all := len(hs) > 0
+	for _, h := range hs {
+		all = all && m.picked[h.meta.ID]
+	}
+	for _, h := range hs {
+		if all {
+			delete(m.picked, h.meta.ID)
+		} else {
+			m.picked[h.meta.ID] = true
+		}
+	}
 }
 
 func (m *model) startCmd(target string) tea.Cmd {
@@ -619,6 +797,125 @@ func (m *model) keyDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // ---- every host ----
 
+// panels are the hosts whose graphs viewAll shows: those picked in the
+// picker, or every host for pingy -g. They follow order, with any it
+// doesn't mention after, oldest first.
+func (m *model) panels() []*host {
+	var hs []*host
+	for _, h := range m.hosts {
+		if !m.fromPick || m.picked[h.meta.ID] {
+			hs = append(hs, h)
+		}
+	}
+	if len(m.order) == 0 {
+		return hs
+	}
+	rank := map[string]int{}
+	for i, id := range m.order {
+		rank[id] = i
+	}
+	slices.SortStableFunc(hs, func(a, b *host) int {
+		ra, aok := rank[a.meta.ID]
+		rb, bok := rank[b.meta.ID]
+		switch {
+		case aok && bok:
+			return ra - rb
+		case aok:
+			return -1
+		case bok:
+			return 1
+		}
+		return 0
+	})
+	return hs
+}
+
+// showFocus keeps the chosen panel in range and on screen.
+func (m *model) showFocus() {
+	_, fits := m.allLayout()
+	m.focus = min(max(m.focus, 0), max(len(m.panels())-1, 0))
+	m.scroll = max(min(m.scroll, m.focus), m.focus-fits+1)
+	m.scrollBy(0)
+}
+
+// move shifts the chosen panel by d places. A saved view keeps the new
+// order straight away.
+func (m *model) move(d int) {
+	hs := m.panels()
+	i, j := m.focus, m.focus+d
+	if i < 0 || i >= len(hs) || j < 0 || j >= len(hs) {
+		return
+	}
+	hs[i], hs[j] = hs[j], hs[i]
+	m.order = make([]string, len(hs))
+	for n, h := range hs {
+		m.order[n] = h.meta.ID
+	}
+	m.focus = j
+	m.showFocus()
+	m.saveOrder()
+}
+
+// saveOrder keeps what's on screen as the saved view being shown, if any.
+func (m *model) saveOrder() {
+	if m.viewName == "" {
+		return
+	}
+	if err := m.app.updateView(m.viewName, m.panels()); err != nil {
+		m.note, m.noteBad = err.Error(), true
+	}
+}
+
+// remove takes the chosen panel off the screen, and out of its saved view.
+func (m *model) remove() {
+	hs := m.panels()
+	if m.focus < 0 || m.focus >= len(hs) {
+		return
+	}
+	if len(hs) == 1 {
+		m.note, m.noteBad = "That's the only host here; a adds others first", true
+		return
+	}
+	h := hs[m.focus]
+	if m.fromPick {
+		delete(m.picked, h.meta.ID)
+	} else {
+		if m.only == nil {
+			m.only = map[string]bool{}
+			for _, o := range hs {
+				m.only[o.meta.ID] = true
+			}
+		}
+		delete(m.only, h.meta.ID)
+		m.refresh()
+	}
+	m.showFocus()
+	m.note, m.noteBad = "Took "+h.meta.Label()+" off; it's still pinged", false
+	if m.viewName != "" {
+		m.note = "Took " + h.meta.Label() + " out of " + m.viewName + "; it's still pinged"
+	}
+	m.saveOrder()
+}
+
+// addMore goes to the picker with these hosts picked, to add or remove some.
+func (m *model) addMore() tea.Cmd {
+	hs := m.panels()
+	m.picked = map[string]bool{}
+	m.order = nil
+	for _, h := range hs {
+		m.picked[h.meta.ID] = true
+		m.order = append(m.order, h.meta.ID)
+	}
+	m.before = maps.Clone(m.picked)
+	m.only = nil // the picker lists every host
+	m.refresh()
+	m.wasMulti = m.multi
+	m.view, m.multi, m.adding, m.mode, m.note = viewPick, true, true, "", ""
+	m.query.SetValue("")
+	m.cursor = 0
+	return m.query.Focus()
+}
+
 // minPanelH is the shortest a host's panel gets in pingy -g, which leaves
 // its graph six rows; hosts that don't fit are scrolled to.
 const minPanelH = 12
@@ -626,41 +923,155 @@ const minPanelH = 12
 // allLayout is how tall each panel is in pingy -g and how many fit on the
 // screen at once, sharing out the screen so panels fill it.
 func (m *model) allLayout() (ph, fits int) {
-	room := max(m.h()-1, 1) // less the key line
-	fits = min(max(len(m.hosts), 1), max(room/minPanelH, 1))
-	return max(room/fits, min(room, minPanelH)), fits
+	n, keys := len(m.panels()), 1
+	// The key lines below the panels depend on whether every host fits.
+	for range 3 {
+		room := max(m.h()-keys, 1)
+		fits = min(max(n, 1), max(room/minPanelH, 1))
+		ph = max(room/fits, min(room, minPanelH))
+		k := len(m.allKeys(fits))
+		if k <= keys {
+			break
+		}
+		keys = k
+	}
+	return ph, fits
+}
+
+// allKeys are the lines of keys and position under pingy -g's panels.
+func (m *model) allKeys(fits int) []string {
+	u := m.u
+	hosts := m.panels()
+	var hints []string
+	if m.viewName != "" {
+		hints = append(hints, u.accent("▦ "+m.viewName))
+	}
+	when := "live"
+	if !m.win.live {
+		when = fmtAgo(time.Since(m.win.end)) + " ago"
+	}
+	hints = append(hints, when+" · "+fmtStep(m.win.step)+" per column")
+	if len(hosts) > 1 {
+		hints = append(hints, "↑↓ choose", "shift-↑↓ reorder")
+	}
+	hints = append(hints, "a add", "r remove", "w save", "←→ time", "+/- zoom")
+	if m.fromPick {
+		hints = append(hints, "esc back")
+	} else {
+		hints = append(hints, "q quit")
+	}
+	if len(hosts) > fits {
+		scroll := min(max(m.scroll, 0), len(hosts)-fits)
+		above, below := scroll, len(hosts)-scroll-fits
+		var parts []string
+		if above > 0 {
+			parts = append(parts, fmt.Sprintf("▲ %d above", above))
+		}
+		if below > 0 {
+			parts = append(parts, fmt.Sprintf("▼ %d below", below))
+		}
+		shown := fmt.Sprintf("%d–%d", scroll+1, scroll+fits)
+		if fits == 1 {
+			shown = fmt.Sprint(scroll + 1)
+		}
+		hints = append(hints, u.fg(colAccent, strings.Join(parts, " · "))+u.faint(fmt.Sprintf("  %s of %d", shown, len(hosts))))
+	}
+	lines := u.keyLines(m.w(), hints...)
+	switch {
+	case m.mode == "save":
+		lines[0] = u.fg(colAccent, "View name: ") + m.input.View() + u.faint("  enter save · esc cancel")
+	case m.note != "":
+		lines[0] = m.noteLine()
+	}
+	return lines
 }
 
 // scrollBy moves pingy -g's panels by n hosts, down when positive.
 func (m *model) scrollBy(n int) {
 	_, fits := m.allLayout()
-	m.scroll = min(max(m.scroll+n, 0), max(len(m.hosts)-fits, 0))
+	m.scroll = min(max(m.scroll+n, 0), max(len(m.panels())-fits, 0))
 }
 
 func (m *model) keyAll(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
+	hosts := m.panels()
+	if m.mode == "save" {
+		switch k {
+		case "esc":
+			m.mode = ""
+			m.input.Blur()
+		case "enter":
+			name := strings.TrimSpace(m.input.Value())
+			if err := m.app.saveView(name, m.viewName, hosts); err != nil {
+				m.note, m.noteBad = err.Error(), true
+				return m, nil
+			}
+			m.mode, m.viewName = "", name
+			m.input.Blur()
+			m.refresh()
+			m.note, m.noteBad = "Saved the view "+name+" · pingy -g "+name+" opens it", false
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+	}
+	m.note = ""
 	every := time.Second
-	for _, h := range m.hosts {
+	for _, h := range hosts {
 		every = min(every, h.meta.Every())
 	}
-	if m.keyTime(k, m.w()-4-gutter-1, every, m.hosts...) {
+	if m.keyTime(k, m.w()-4-gutter-1, every, hosts...) {
 		return m, nil
 	}
 	_, fits := m.allLayout()
 	switch k {
-	case "esc", "q":
+	case "esc", "q", "backspace":
+		if m.fromPick {
+			m.view, m.fromPick = viewPick, false
+			if !m.multi {
+				m.clearPicks()
+			}
+			return m, m.query.Focus()
+		}
+		if k == "backspace" {
+			return m, nil
+		}
 		m.quitting = true
 		return m, tea.Quit
 	case "up", "k":
-		m.scrollBy(-1)
+		m.focus--
+		m.showFocus()
 	case "down", "j":
-		m.scrollBy(1)
-	case "ctrl+u", "shift+up", "K":
-		m.scrollBy(-fits)
-	case "ctrl+d", "shift+down", "J", "space":
-		m.scrollBy(fits)
+		m.focus++
+		m.showFocus()
+	case "shift+up", "K":
+		m.move(-1)
+	case "shift+down", "J":
+		m.move(1)
+	case "ctrl+u":
+		m.focus -= fits
+		m.showFocus()
+	case "ctrl+d", "space":
+		m.focus += fits
+		m.showFocus()
 	case "g":
-		m.scroll = 0
+		m.focus = 0
+		m.showFocus()
+	case "a":
+		return m, m.addMore()
+	case "r":
+		m.remove()
+		return m, nil
+	case "w":
+		if len(hosts) > 0 {
+			m.mode = "save"
+			m.input.SetValue(m.viewName)
+			m.input.Placeholder = "a name for this view"
+			m.input.CursorEnd()
+			return m, m.input.Focus()
+		}
 	}
 	return m, nil
 }
@@ -716,15 +1127,27 @@ func (m *model) renderPick() string {
 
 	var left []string
 	m.query.SetWidth(max(leftW-12, 10))
-	count := fmt.Sprintf("%d/%d", len(rows), len(m.hosts))
-	if len(rows) > 0 && rows[len(rows)-1].add != "" {
-		count = fmt.Sprintf("%d/%d", len(rows)-1, len(m.hosts))
+	shown := 0
+	for _, r := range rows {
+		if r.h != nil {
+			shown++
+		}
 	}
-	left = append(left,
-		spread(u.fg(colAccent, "❯ ")+m.query.View(), u.faint(count), leftW),
-		u.faint("enter open · ctrl-x kill · ctrl-s pause · esc quit"),
-		u.faint(strings.Repeat("─", leftW)),
-	)
+	count := u.faint(fmt.Sprintf("%d/%d", shown, len(m.hosts)))
+	keys := []string{"enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-s pause", "esc quit"}
+	if m.multi {
+		count = u.fg(colAccent, fmt.Sprintf("%d picked ", len(m.picked))) + count
+		keys = []string{"tab pick", "enter graph them", "esc done"}
+		if m.adding {
+			keys = []string{"tab add or remove", "enter done", "esc cancel"}
+			if m.viewName != "" {
+				keys = []string{u.accent("▦ " + m.viewName), "tab add or remove", "enter save", "esc cancel"}
+			}
+		}
+	}
+	left = append(left, spread(u.fg(colAccent, "❯ ")+m.query.View(), count, leftW))
+	left = append(left, u.keyLines(leftW, keys...)...)
+	left = append(left, u.faint(strings.Repeat("─", leftW)))
 	listH := innerH - len(left) - 1
 	off := max(m.cursor-listH+1, 0)
 	now := time.Now()
@@ -735,12 +1158,43 @@ func (m *model) renderPick() string {
 		if sel {
 			pointer = u.fg(colAccent, "▸ ")
 		}
+		if m.multi && r.h != nil {
+			if m.picked[r.h.meta.ID] {
+				pointer += u.fg(colAccent, "✓ ")
+			} else {
+				pointer += u.faint("· ")
+			}
+		}
 		if r.add != "" {
 			label := "Ping " + r.add
 			if sel {
 				label = u.bold(label)
 			}
 			left = append(left, pointer+u.fg(colAccent, "+ ")+label)
+			continue
+		}
+		if r.v != nil {
+			hs, gone := m.viewHosts(r.v)
+			if m.multi {
+				all := len(hs) > 0
+				for _, h := range hs {
+					all = all && m.picked[h.meta.ID]
+				}
+				if all {
+					pointer += u.fg(colAccent, "✓ ")
+				} else {
+					pointer += u.faint("· ")
+				}
+			}
+			name := r.v.Name
+			if sel {
+				name = u.bold(name)
+			}
+			right := fmt.Sprintf("%d %s", len(hs), plural(len(hs), "host", "hosts"))
+			if gone > 0 {
+				right += fmt.Sprintf(" · %d gone", gone)
+			}
+			left = append(left, spread(pointer+u.fg(colAccent, "▦ ")+name, u.faint(right), leftW))
 			continue
 		}
 		glyph, word, c := u.status(r.h, now)
@@ -764,7 +1218,10 @@ func (m *model) renderPick() string {
 		left = append(left, "")
 	}
 	left = append(left, m.noteLine())
-	if m.mode == "kill" && m.target != nil {
+	switch {
+	case m.mode == "kill" && m.targetView != "":
+		left[len(left)-1] = u.fg(colBad, "Delete the view "+m.targetView+"? Its hosts keep pinging. y/n")
+	case m.mode == "kill" && m.target != nil:
 		left[len(left)-1] = u.fg(colBad, "Stop pinging "+m.target.meta.Label()+" and delete its history? y/n")
 	}
 
@@ -774,6 +1231,8 @@ func (m *model) renderPick() string {
 		switch {
 		case len(rows) == 0:
 			preview = strings.Split(u.box("", nil, rightW, innerH, colBorder), "\n")
+		case rows[m.cursor].v != nil:
+			preview = m.viewPreview(rows[m.cursor].v, rightW, innerH)
 		case rows[m.cursor].add != "":
 			t := rows[m.cursor].add
 			preview = strings.Split(u.box(u.accent("+ "+t), []string{
@@ -781,7 +1240,7 @@ func (m *model) renderPick() string {
 				"then watch it here.",
 			}, rightW, innerH, colBorder), "\n")
 		default:
-			preview = u.hostPanel(rows[m.cursor].h, now, window{step: time.Second, live: true}, rightW, innerH)
+			preview = u.hostPanel(rows[m.cursor].h, now, window{step: time.Second, live: true}, rightW, innerH, colBorder)
 		}
 		for i := range lines {
 			p := ""
@@ -794,9 +1253,26 @@ func (m *model) renderPick() string {
 	return u.box(u.accent("pingy"), lines, W, H, colBorder)
 }
 
+// viewPreview lists a saved view's hosts, as the picker's preview.
+func (m *model) viewPreview(v *savedView, w, hgt int) []string {
+	u := m.u
+	hs, gone := m.viewHosts(v)
+	now := time.Now()
+	var lines []string
+	for _, h := range hs {
+		glyph, _, c := u.status(h, now)
+		lines = append(lines, spread(u.fg(c, glyph)+" "+h.meta.Label(), u.lastRTT(h), w-4))
+	}
+	if gone > 0 {
+		lines = append(lines, u.faint(fmt.Sprintf("%d no longer pinged; it comes back if pinged again", gone)))
+	}
+	lines = append(lines, "", u.faint("enter graphs them together · ctrl-x deletes the view"))
+	return strings.Split(u.box(u.accent("▦ "+v.Name), lines, w, hgt, colBorder), "\n")
+}
+
 // hostPanel draws h's recent graph in a w×hgt box, as the picker's preview
 // and in pingy -g.
-func (u ui) hostPanel(h *host, now time.Time, win window, w, hgt int) []string {
+func (u ui) hostPanel(h *host, now time.Time, win window, w, hgt int, border color.Color) []string {
 	inner := w - 4
 	end := win.endAt(now)
 	step := fitStep(win.step, h.meta.Every())
@@ -808,7 +1284,7 @@ func (u ui) hostPanel(h *host, now time.Time, win window, w, hgt int) []string {
 	if g := u.graph(h.samples(), end, step, inner, hgt-2-len(lines)); g != nil {
 		lines = append(lines, g...)
 	}
-	return strings.Split(u.box(u.accent(h.meta.Label()), lines, w, hgt, colBorder), "\n")
+	return strings.Split(u.box(u.accent(h.meta.Label()), lines, w, hgt, border), "\n")
 }
 
 // statusLine is a host's status, address and interval.
@@ -870,9 +1346,22 @@ func (m *model) renderDetail() string {
 		spread(u.faint(span+" · "+fmtStep(step)+" per column"), when, innerW),
 		"",
 	}
-	gh := innerH - len(lines) - 4
+	keys := []string{"←→ move", "shift-←→ page", "home/end", "+/- zoom", "n rename", "s pause", "x kill"}
+	switch {
+	case m.mode == "rename":
+		keys = []string{"enter save", "esc cancel", "empty for the address"}
+	case m.sess != nil && m.sess.owned:
+		keys = append(keys, "d detach", "q stop & quit")
+	case m.sess != nil:
+		keys = append(keys, "q quit")
+	case m.fromPick:
+		keys = append(keys, "esc back")
+	}
+	keyLines := u.keyLines(innerW, keys...)
+	foot := 3 + len(keyLines) // stats, a gap, the note, then the keys
+	gh := innerH - len(lines) - foot
 	lines = append(lines, u.graph(h.samples(), end, step, innerW, gh)...)
-	for len(lines) < innerH-4 {
+	for len(lines) < innerH-foot {
 		lines = append(lines, "")
 	}
 	lines = append(lines, u.statsLine(monitor.Summarise(between(h.samples(), start, end)), "shown"), "")
@@ -886,18 +1375,7 @@ func (m *model) renderDetail() string {
 		lines = append(lines, m.noteLine())
 	}
 
-	keys := "←→ move · shift-←→ page · home/end · +/- zoom · n rename · s pause · x kill"
-	switch {
-	case m.mode == "rename":
-		keys = "enter save · esc cancel · empty for the address"
-	case m.sess != nil && m.sess.owned:
-		keys += " · d detach · q stop & quit"
-	case m.sess != nil:
-		keys += " · q quit"
-	case m.fromPick:
-		keys += " · esc back"
-	}
-	lines = append(lines, u.faint(keys))
+	lines = append(lines, keyLines...)
 	return u.box(u.accent("pingy"), lines, W, H, colBorder)
 }
 
@@ -922,41 +1400,28 @@ func (m *model) renderAll() string {
 	u := m.u
 	W, H := m.w(), m.h()
 	now := time.Now()
+	hosts := m.panels()
 	var lines []string
-	if len(m.hosts) == 0 {
+	switch {
+	case len(hosts) > 0:
+	case m.fromPick:
+		lines = append(lines, u.faint("The hosts picked were stopped and deleted elsewhere. esc goes back."))
+	default:
 		lines = append(lines, u.faint("Nothing is being pinged. Start with: pingy <host> -d"))
 	}
 	ph, fits := m.allLayout()
-	m.scrollBy(0) // stay in range when hosts go or the screen grows
-	for i := m.scroll; i < len(m.hosts) && i < m.scroll+fits; i++ {
-		lines = append(lines, u.hostPanel(m.hosts[i], now, m.win, W, ph)...)
+	m.showFocus() // stay in range when hosts go or the screen grows
+	for i := m.scroll; i < len(hosts) && i < m.scroll+fits; i++ {
+		border := colBorder
+		if i == m.focus && len(hosts) > 1 {
+			border = colAccent
+		}
+		lines = append(lines, u.hostPanel(hosts[i], now, m.win, W, ph, border)...)
 	}
-	for len(lines) < H-1 {
+	keys := m.allKeys(fits)
+	for len(lines) < H-len(keys) {
 		lines = append(lines, "")
 	}
-	when := "live"
-	if !m.win.live {
-		when = fmtAgo(now.Sub(m.win.end)) + " ago"
-	}
-	keys := fmt.Sprintf("%s · %s per column · ←→ move · home/end · +/- zoom", when, fmtStep(m.win.step))
-	where := ""
-	if len(m.hosts) > fits {
-		keys += " · ↑↓ scroll"
-		above, below := m.scroll, len(m.hosts)-m.scroll-fits
-		var parts []string
-		if above > 0 {
-			parts = append(parts, fmt.Sprintf("▲ %d above", above))
-		}
-		if below > 0 {
-			parts = append(parts, fmt.Sprintf("▼ %d below", below))
-		}
-		shown := fmt.Sprintf("%d–%d", m.scroll+1, m.scroll+fits)
-		if fits == 1 {
-			shown = fmt.Sprint(m.scroll + 1)
-		}
-		where = u.fg(colAccent, strings.Join(parts, " · ")) + u.faint(fmt.Sprintf("  %s of %d", shown, len(m.hosts)))
-	}
-	keys += " · q quit"
-	lines = append(lines[:H-1], spread(u.faint(keys), where, W))
+	lines = append(lines[:max(H-len(keys), 0)], keys...)
 	return strings.Join(lines, "\n")
 }

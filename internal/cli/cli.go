@@ -242,7 +242,7 @@ func (a *App) start(target string, so startOpts) (m *monitor.Meta, already, crea
 			return nil, false, false, fmt.Errorf("%v; check the address, or that you're online", err)
 		}
 		if so.name != "" {
-			if err := monitor.CheckName(root, so.name, ""); err != nil {
+			if err := a.checkHostName(so.name, ""); err != nil {
 				return nil, false, false, err
 			}
 		}
@@ -256,7 +256,7 @@ func (a *App) start(target string, so startOpts) (m *monitor.Meta, already, crea
 		created = true
 	}
 	if so.name != "" && !created {
-		if err := monitor.CheckName(root, so.name, m.ID); err != nil {
+		if err := a.checkHostName(so.name, m.ID); err != nil {
 			return nil, false, false, err
 		}
 	}
@@ -340,7 +340,7 @@ func (a *App) cmdDetach(target, name string, interval time.Duration) error {
 
 // rename gives m a new name; "" goes back to showing its target.
 func (a *App) rename(m *monitor.Meta, name string) error {
-	if err := monitor.CheckName(a.root(), name, m.ID); err != nil {
+	if err := a.checkHostName(name, m.ID); err != nil {
 		return err
 	}
 	fresh, err := m.Reload()

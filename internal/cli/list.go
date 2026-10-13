@@ -84,18 +84,14 @@ func (u ui) lastRTT(h *host) string {
 	return fmtMs(s[len(s)-1].Ms())
 }
 
+// loadHosts loads the hosts and views named, or every host.
 func (a *App) loadHosts(filter []string) ([]*host, error) {
-	root := a.root()
-	var list []*monitor.Meta
-	if len(filter) == 0 {
-		list = monitor.List(root)
-	}
-	for _, t := range filter {
-		m := monitor.Find(root, t)
-		if m == nil {
-			return nil, fmt.Errorf("nothing called %q is being pinged; pingy -l lists them", t)
+	list := monitor.List(a.root())
+	if len(filter) > 0 {
+		var err error
+		if list, _, err = a.expand(filter); err != nil {
+			return nil, err
 		}
-		list = append(list, m)
 	}
 	hosts := make([]*host, len(list))
 	for i, m := range list {
@@ -162,6 +158,9 @@ func (a *App) cmdList(filter []string) error {
 	if stopped > 0 {
 		a.hint("%d stopped · pingy -r to ping %s again", stopped, plural(stopped, "it", "them"))
 	}
+	if len(filter) == 0 {
+		a.listViews()
+	}
 	return nil
 }
 
@@ -204,4 +203,33 @@ func plural(n int, one, many string) string {
 		return one
 	}
 	return many
+}
+
+// listViews prints the saved views under pingy -l's table.
+func (a *App) listViews() {
+	vs, err := a.loadViews()
+	if err != nil {
+		a.hint("%v", err)
+		return
+	}
+	if len(vs) == 0 {
+		return
+	}
+	u := a.outUI()
+	all := monitor.List(a.root())
+	var rows [][]string
+	for _, v := range vs {
+		found, gone := v.resolve(all)
+		var names []string
+		for _, m := range found {
+			names = append(names, m.Label())
+		}
+		if gone > 0 {
+			names = append(names, u.faint(fmt.Sprintf("%d no longer pinged", gone)))
+		}
+		rows = append(rows, []string{u.accent(v.Name), strings.Join(names, ", ")})
+	}
+	fmt.Fprintln(a.Stdout)
+	fmt.Fprintln(a.Stdout, table2(u, []string{"VIEW", "HOSTS"}, rows))
+	a.hint("pingy -g <view> to graph one")
 }

@@ -166,3 +166,25 @@ func (a *App) notef(format string, args ...any) {
 	}
 	fmt.Fprintf(a.Stderr, "pingy: %s\n", msg)
 }
+
+// keyLines lays hints out over as many lines w wide as they need, breaking
+// only between hints. Plain hints are dimmed; styled ones keep their style.
+func (u ui) keyLines(w int, hints ...string) []string {
+	sep := u.faint(" · ")
+	var lines []string
+	cur, curW := "", 0
+	for _, h := range hints {
+		if !strings.Contains(h, "\x1b") {
+			h = u.faint(h)
+		}
+		hw := lipgloss.Width(h)
+		if cur != "" && curW+3+hw > w {
+			lines, cur, curW = append(lines, cur), "", 0
+		}
+		if cur != "" {
+			cur, curW = cur+sep, curW+3
+		}
+		cur, curW = cur+h, curW+hw
+	}
+	return append(lines, cur)
+}

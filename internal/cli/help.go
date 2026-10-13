@@ -55,8 +55,9 @@ Usage:
                                 running in the background, q stops it
   pingy <host> -d               Ping a host in the background
   pingy <host>... -d            Several at once
-  pingy -l                      List the hosts being pinged
+  pingy -l                      List the hosts being pinged, and saved views
   pingy -g [host...]            Graph every host (or just these), live
+  pingy -g <view>               Graph a saved view's hosts
   pingy -k <host>...            Stop pinging hosts and delete their history
   pingy -k --all                Stop them all
   pingy -r [host...]            Ping stopped hosts again, e.g. after a restart
@@ -71,10 +72,19 @@ Options:
 A host is a name or address, e.g. 1.1.1.1, router.lan or example.com. Hosts
 can also be given by their pingy name.
 
+A view is a group of hosts graphed together under a one-word name: pick
+them in the panel with ctrl-t, or run pingy -g with them, then press w to
+save it. A view finds a host again if it's deleted and later pinged again,
+and never starts pinging anything by itself.
+
 In the panel:
-  type                          Search; enter opens the chosen host's graph
+  type                          Search; enter opens the chosen host or view
   enter on "+ Ping …"           Start pinging what you typed
-  ctrl-x · ctrl-s               Stop and delete · pause or resume
+  ctrl-x · ctrl-s               Stop and delete (a view: just the view) · pause
+                                or resume
+  ctrl-t                        Pick several hosts: tab picks the chosen one
+                                (or a view's), enter graphs them together, esc
+                                stops picking
   esc                           Quit
 
 In a graph:
@@ -85,9 +95,14 @@ In a graph:
   n · s · x                     Rename · pause or resume · stop and delete
   esc                           Back
 
-In pingy -g, as in a graph, plus:
-  ↑ ↓ (k j)                     Scroll to the next or previous host
-  ctrl-u ctrl-d (K J)           A screen of hosts at a time
+In pingy -g, or hosts picked together, as in a graph, plus:
+  ↑ ↓ (k j)                     Choose the next or previous host
+  shift-↑ ↓ (K J)               Move the chosen host up or down; a saved view
+                                keeps the new order
+  ctrl-u ctrl-d                 A screen of hosts at a time
+  a · r                         Add or remove hosts · remove the chosen one;
+                                a saved view keeps the change
+  w                             Save these hosts as a view, or rename this one
 
 Environment:
   PINGY_HOME                    Where pingy keeps hosts; default ~/.config/pingy

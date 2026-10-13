@@ -6,6 +6,10 @@ graph them all with `pingy -g`, or run `pingy` for a panel where you search
 the hosts and see each one's recent graph. Opening a host shows its whole
 history, which you can move back through, zoom, rename, pause or delete.
 
+To watch a few hosts together, press ctrl-t in the panel, tab to pick them and
+enter to graph them; press `w` there to save them as a view, which
+`pingy -g <view>` opens again.
+
 `pingy <host>` without `-d` pings a host and shows its graph straight away;
 press `d` to leave it running in the background, or `q` to stop.
 
@@ -14,6 +18,7 @@ pingy 1.1.1.1 -d -n cloudflare   # in the background, named
 pingy router.lan 8.8.8.8 -d      # several at once
 pingy -l                         # list them
 pingy -g                         # graph them all, live
+pingy -g office                  # graph a saved view
 pingy                            # the panel
 pingy -k cloudflare              # stop one and delete its history
 pingy -r                         # start stopped ones again, e.g. after a restart

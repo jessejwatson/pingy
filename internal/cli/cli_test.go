@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,5 +83,34 @@ func TestBoxIsExactSize(t *testing.T) {
 		if w := lipgloss.Width(l); w != 20 {
 			t.Fatalf("%q is %d wide", l, w)
 		}
+	}
+}
+
+func TestPickSeveralAndGraphThem(t *testing.T) {
+	a, _ := testApp(t, "1.1.1.1", "8.8.8.8", "9.9.9.9")
+	m := newPickModel(a)
+	// Pick the first and third hosts, skipping the second.
+	press(m, "ctrl+t", "tab", "down", "tab", "enter")
+	if m.view != viewAll {
+		t.Fatalf("view = %v, want viewAll", m.view)
+	}
+	var got []string
+	for _, h := range m.panels() {
+		got = append(got, h.meta.Target)
+	}
+	if want := []string{"1.1.1.1", "9.9.9.9"}; !slices.Equal(got, want) {
+		t.Fatalf("panels = %v, want %v", got, want)
+	}
+	if s := m.renderAll(); !strings.Contains(s, "9.9.9.9") || strings.Contains(s, "8.8.8.8") {
+		t.Fatalf("render shows the wrong hosts:\n%s", s)
+	}
+	// esc goes back to the picker, still picking; esc again stops.
+	press(m, "esc")
+	if m.view != viewPick || !m.multi || len(m.picked) != 2 || m.quitting {
+		t.Fatalf("after esc: view %v multi %v picked %v", m.view, m.multi, m.picked)
+	}
+	press(m, "esc")
+	if m.multi || len(m.picked) != 0 || m.quitting {
+		t.Fatalf("after second esc: multi %v picked %v", m.multi, m.picked)
 	}
 }
