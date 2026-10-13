@@ -619,9 +619,22 @@ func (m *model) keyDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // ---- every host ----
 
-func (m *model) panelH() int {
-	n := max(len(m.hosts), 1)
-	return min(max((m.h()-1)/n, 7), max(m.h()-1, 7))
+// minPanelH is the shortest a host's panel gets in pingy -g, which leaves
+// its graph six rows; hosts that don't fit are scrolled to.
+const minPanelH = 12
+
+// allLayout is how tall each panel is in pingy -g and how many fit on the
+// screen at once, sharing out the screen so panels fill it.
+func (m *model) allLayout() (ph, fits int) {
+	room := max(m.h()-1, 1) // less the key line
+	fits = min(max(len(m.hosts), 1), max(room/minPanelH, 1))
+	return max(room/fits, min(room, minPanelH)), fits
+}
+
+// scrollBy moves pingy -g's panels by n hosts, down when positive.
+func (m *model) scrollBy(n int) {
+	_, fits := m.allLayout()
+	m.scroll = min(max(m.scroll+n, 0), max(len(m.hosts)-fits, 0))
 }
 
 func (m *model) keyAll(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -633,15 +646,21 @@ func (m *model) keyAll(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.keyTime(k, m.w()-4-gutter-1, every, m.hosts...) {
 		return m, nil
 	}
-	fits := max((m.h()-1)/m.panelH(), 1)
+	_, fits := m.allLayout()
 	switch k {
 	case "esc", "q":
 		m.quitting = true
 		return m, tea.Quit
 	case "up", "k":
-		m.scroll = max(m.scroll-1, 0)
+		m.scrollBy(-1)
 	case "down", "j":
-		m.scroll = min(m.scroll+1, max(len(m.hosts)-fits, 0))
+		m.scrollBy(1)
+	case "ctrl+u", "shift+up", "K":
+		m.scrollBy(-fits)
+	case "ctrl+d", "shift+down", "J", "space":
+		m.scrollBy(fits)
+	case "g":
+		m.scroll = 0
 	}
 	return m, nil
 }
@@ -907,9 +926,8 @@ func (m *model) renderAll() string {
 	if len(m.hosts) == 0 {
 		lines = append(lines, u.faint("Nothing is being pinged. Start with: pingy <host> -d"))
 	}
-	ph := m.panelH()
-	fits := max((H-1)/ph, 1)
-	m.scroll = min(m.scroll, max(len(m.hosts)-fits, 0))
+	ph, fits := m.allLayout()
+	m.scrollBy(0) // stay in range when hosts go or the screen grows
 	for i := m.scroll; i < len(m.hosts) && i < m.scroll+fits; i++ {
 		lines = append(lines, u.hostPanel(m.hosts[i], now, m.win, W, ph)...)
 	}
@@ -921,10 +939,24 @@ func (m *model) renderAll() string {
 		when = fmtAgo(now.Sub(m.win.end)) + " ago"
 	}
 	keys := fmt.Sprintf("%s · %s per column · ←→ move · home/end · +/- zoom", when, fmtStep(m.win.step))
+	where := ""
 	if len(m.hosts) > fits {
-		keys += fmt.Sprintf(" · ↑↓ %d–%d of %d", m.scroll+1, min(m.scroll+fits, len(m.hosts)), len(m.hosts))
+		keys += " · ↑↓ scroll"
+		above, below := m.scroll, len(m.hosts)-m.scroll-fits
+		var parts []string
+		if above > 0 {
+			parts = append(parts, fmt.Sprintf("▲ %d above", above))
+		}
+		if below > 0 {
+			parts = append(parts, fmt.Sprintf("▼ %d below", below))
+		}
+		shown := fmt.Sprintf("%d–%d", m.scroll+1, m.scroll+fits)
+		if fits == 1 {
+			shown = fmt.Sprint(m.scroll + 1)
+		}
+		where = u.fg(colAccent, strings.Join(parts, " · ")) + u.faint(fmt.Sprintf("  %s of %d", shown, len(m.hosts)))
 	}
 	keys += " · q quit"
-	lines = append(lines[:H-1], u.faint(fit(keys, W)))
+	lines = append(lines[:H-1], spread(u.faint(keys), where, W))
 	return strings.Join(lines, "\n")
 }

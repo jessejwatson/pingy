@@ -85,6 +85,10 @@ In a graph:
   n · s · x                     Rename · pause or resume · stop and delete
   esc                           Back
 
+In pingy -g, as in a graph, plus:
+  ↑ ↓ (k j)                     Scroll to the next or previous host
+  ctrl-u ctrl-d (K J)           A screen of hosts at a time
+
 Environment:
   PINGY_HOME                    Where pingy keeps hosts; default ~/.config/pingy
   PINGY_ICONS=nerd              Nerd Font icons
