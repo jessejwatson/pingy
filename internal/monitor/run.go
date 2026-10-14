@@ -27,20 +27,24 @@ const (
 
 // Run is the monitor process for the host in dir: it pings until it's
 // told to stop, or, for a foreground monitor, until its owner goes away.
-// A host with an origin is pinged there instead, by runRemote.
+// A host with an origin is pinged there instead, by runRemote. When
+// pingy is updated, it carries on as the new one; see restart.go.
 func Run(dir string) error {
 	m, err := Load(dir)
 	if err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(m.lockPath(), os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
+	lock := inheritedLock(m.lockPath())
+	if lock == nil {
+		if lock, err = os.OpenFile(m.lockPath(), os.O_RDWR|os.O_CREATE, 0o600); err != nil {
+			return err
+		}
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			lock.Close()
+			return fmt.Errorf("%s is already being pinged", m.Label())
+		}
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return fmt.Errorf("%s is already being pinged", m.Label())
-	}
 	signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
@@ -48,7 +52,26 @@ func Run(dir string) error {
 	retry := make(chan os.Signal, 1)
 	signal.Notify(retry, syscall.SIGUSR1)
 
-	up := newUpkeep(dir)
+	exe := newExeWatch()
+	for {
+		up := newUpkeep(dir)
+		up.exe = exe
+		if err := run(dir, up, stop, retry); err != nil || !up.restart {
+			return err
+		}
+		err := restart(exe.path, dir, lock)
+		fmt.Fprintf(os.Stderr, "%s: can't restart: %v\n", time.Now().Format(time.RFC3339), err)
+		exe = newExeWatch() // and carry on as this one
+	}
+}
+
+// run pings for Run until it's stopped, or until pingy has been updated
+// (up.restart).
+func run(dir string, up *upkeep, stop, retry <-chan os.Signal) error {
+	m, err := Load(dir)
+	if err != nil {
+		return err
+	}
 	out, err := openSamples(m.SamplesPath(), up.limit)
 	if err != nil {
 		return err
@@ -123,6 +146,8 @@ type upkeep struct {
 	dir, home            string
 	limit                int64
 	metaMod, settingsMod time.Time
+	exe                  *exeWatch // pingy, to notice it being updated
+	restart              bool      // it was: stop, to restart as the new one
 }
 
 func newUpkeep(dir string) *upkeep {
@@ -153,6 +178,10 @@ func (u *upkeep) check(m **Meta, out *sampleFile) bool {
 		if (*m).Ephemeral {
 			os.RemoveAll(u.dir)
 		}
+		return true
+	}
+	if u.exe.changed() {
+		u.restart = true
 		return true
 	}
 	return false

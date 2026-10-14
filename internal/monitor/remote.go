@@ -362,6 +362,12 @@ func dialRemote(home string, m *Meta, since time.Time) (*remoteConn, error) {
 
 func (c *remoteConn) kill() { c.cmd.Process.Kill() }
 
+// close ends ssh for good, when nothing will wait for it otherwise.
+func (c *remoteConn) close() {
+	c.kill()
+	c.cmd.Process.Wait()
+}
+
 // end waits for ssh to finish and says why the connection ended, in
 // words for the host's status, and whether logging in would help.
 func (c *remoteConn) end(origin string) (link, login string) {
@@ -428,12 +434,12 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop, retry <-cha
 			select {
 			case <-stop:
 				tick.Stop()
-				c.kill()
+				c.close()
 				return nil
 			case <-tick.C:
 				if up.check(&m, out) {
 					tick.Stop()
-					c.kill()
+					c.close()
 					return nil
 				}
 				if m.Every() != every || m.Origin != origin {
@@ -472,7 +478,7 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop, retry <-cha
 						continue // already have it
 					}
 					if err := out.add(s); err != nil {
-						c.kill()
+						c.close()
 						return err
 					}
 					last = s.At

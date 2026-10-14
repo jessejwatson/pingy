@@ -356,7 +356,9 @@ func (a *App) start(spec string, so startOpts) (m *monitor.Meta, already, create
 // spawn starts pingy __monitor for m in its own session, so it outlives
 // this terminal, and waits for it to be up.
 func (a *App) spawn(m *monitor.Meta) error {
-	exe, err := os.Executable()
+	// By a path that finds pingy again once it's updated, for the monitor
+	// to restart as.
+	exe, err := monitor.StableExe()
 	if err != nil {
 		return err
 	}
