@@ -96,7 +96,7 @@ you're back; pingy -k here leaves it running there. Anywhere else, a
 script pings it, only while you're connected.
 
 A view is a group of hosts graphed together under a one-word name: pick
-them in the panel with ctrl-t, or run pingy -g with them, then press w to
+them in the panel with ctrl-t, or run pingy -g with them, then press s to
 save it. A view finds a host again if it's deleted and later pinged again,
 and never starts pinging anything by itself.
 
@@ -133,7 +133,7 @@ In pingy -g, or hosts picked together, as in a graph, plus:
                                 a saved view keeps the change
   p                             Pause these hosts, or resume them if all are
                                 paused
-  w                             Save these hosts as a view, or rename this one
+  s                             Save these hosts as a view, or rename this one
 
 Environment:
   PINGY_HOME                    Where pingy keeps hosts; default ~/.config/pingy

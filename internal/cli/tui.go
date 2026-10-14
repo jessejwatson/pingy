@@ -1039,7 +1039,7 @@ func (m *model) allKeys(fits int) []string {
 	if len(hosts) > 1 {
 		hints = append(hints, "↑↓ choose", "shift-↑↓ reorder")
 	}
-	hints = append(hints, "a add", "r remove", "w save", "p pause", "←→ time", "+/- zoom")
+	hints = append(hints, "a add", "r remove", "s save", "p pause", "←→ time", "+/- zoom")
 	if h := m.chosenHost(); h != nil && needsLogin(h) {
 		hints = append(hints, u.fg(colWarn, "ctrl-l log in"))
 	}
@@ -1160,7 +1160,7 @@ func (m *model) keyAll(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.remove()
 		return m, nil
-	case "w":
+	case "s":
 		if len(hosts) > 0 {
 			m.mode = "save"
 			m.input.SetValue(m.viewName)

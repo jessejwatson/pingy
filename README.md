@@ -7,7 +7,7 @@ the hosts and see each one's recent graph. Opening a host shows its whole
 history, which you can move back through, zoom, rename, pause or delete.
 
 To watch a few hosts together, press ctrl-t in the panel, tab to pick them and
-enter to graph them; press `w` there to save them as a view, which
+enter to graph them; press `s` there to save them as a view, which
 `pingy -g <view>` opens again.
 
 `pingy <host>` without `-d` pings a host and shows its graph straight away;

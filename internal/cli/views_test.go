@@ -178,7 +178,7 @@ func typeText(m *model, s string) {
 func TestSaveAndOpenAViewInThePanel(t *testing.T) {
 	a, _ := testApp(t, "1.1.1.1", "8.8.8.8", "9.9.9.9")
 	m := newPickModel(a)
-	press(m, "ctrl+t", "tab", "down", "down", "tab", "enter", "w")
+	press(m, "ctrl+t", "tab", "down", "down", "tab", "enter", "s")
 	typeText(m, "office")
 	press(m, "enter")
 	if m.mode != "" || m.viewName != "office" || m.noteBad {
@@ -409,7 +409,7 @@ func TestKeyHintsAllShow(t *testing.T) {
 		press(m, "esc")
 		m.cursor = 0
 		press(m, "enter")
-		check("view", m.renderAll(), "▦ office", "↑↓ choose", "shift-↑↓ reorder", "a add", "r remove", "w save", "+/- zoom", "esc back")
+		check("view", m.renderAll(), "▦ office", "↑↓ choose", "shift-↑↓ reorder", "a add", "r remove", "s save", "+/- zoom", "esc back")
 		press(m, "a")
 		check("adding", m.renderPick(), "tab add or remove", "enter save", "esc cancel")
 	}
@@ -455,10 +455,10 @@ func TestPIsPause(t *testing.T) {
 	}
 	m.busy = false
 	press(m, "esc", "ctrl+t", "tab", "tab", "enter", "s")
-	if m.view != viewAll || m.busy {
-		t.Fatalf("s in the graphs: view %v busy %v", m.view, m.busy)
+	if m.view != viewAll || m.busy || m.mode != "save" {
+		t.Fatalf("s in the graphs: view %v busy %v mode %q (it should save)", m.view, m.busy, m.mode)
 	}
-	press(m, "p")
+	press(m, "esc", "p")
 	if !m.busy {
 		t.Fatal("p doesn't pause in the graphs")
 	}
