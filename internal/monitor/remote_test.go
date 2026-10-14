@@ -58,8 +58,8 @@ func TestChecksKeepSSHSafe(t *testing.T) {
 	if CheckOriginName("a@b") == nil || CheckOriginName("office") != nil {
 		t.Error("origin names")
 	}
-	remote, _ := RemoteCommand("it's", time.Second, time.Time{})
-	if remote != `sh -s -- 'it'\''s' '1000' '0'` {
+	remote, _ := RemoteCommand("it's", time.Second, time.Time{}, "k", "")
+	if remote != `sh -s -- 'it'\''s' '1000' '0' 'k' '-'` {
 		t.Errorf("quoted as %s", remote)
 	}
 }
@@ -73,6 +73,9 @@ func TestParseStreamLine(t *testing.T) {
 		"1700000000000 1500":   {kind: 's', sample: Sample{At: time.UnixMilli(1700000000000), RTT: 1500 * time.Microsecond}},
 		"- -1":                 {kind: 's', sample: Sample{RTT: -1}, now: true},
 		"- 2000\r":             {kind: 's', sample: Sample{RTT: 2 * time.Millisecond}, now: true},
+		"@ 1792016233.96273":   {kind: '@', text: "1792016233.96273"},
+		"+ 7 3500 111":         {kind: 's', sample: Sample{RTT: 111 * time.Microsecond}, now: true, seq: 7, ago: 3500 * time.Millisecond},
+		"+ 8 0 -1":             {kind: 's', sample: Sample{RTT: -1}, now: true, seq: 8},
 	}
 	for in, want := range cases {
 		got, ok := parseStreamLine(in)
@@ -80,7 +83,7 @@ func TestParseStreamLine(t *testing.T) {
 			t.Errorf("%q = %+v, %v; want %+v", in, got, ok, want)
 		}
 	}
-	for _, bad := range []string{"pingy-stream 2 pingy", "hello", "12 x", ""} {
+	for _, bad := range []string{"pingy-stream 2 pingy", "hello", "12 x", "", "+ 1 2", "+ 1 -5 100"} {
 		if _, ok := parseStreamLine(bad); ok {
 			t.Errorf("%q was read", bad)
 		}
@@ -187,6 +190,75 @@ echo "- 3000"
 	first, second, _ := strings.Cut(string(calls), "\n")
 	if !strings.Contains(first, "-- office sh -s -- 'dns.example' '1000' '0'") || !strings.Contains(second, "'1000' '") ||
 		strings.Contains(second, "'1000' '0'") {
+		t.Fatalf("ssh was run as:\n%s", calls)
+	}
+}
+
+// TestRunRemoteFillsInFromTheScriptsCache: connecting again to a script
+// whose pinger carried on, the monitor says what it had from it, and
+// takes the pings it missed, placed by how long ago they were sent.
+func TestRunRemoteFillsInFromTheScriptsCache(t *testing.T) {
+	home := t.TempDir()
+	fake := filepath.Join(home, "fakessh")
+	os.WriteFile(fake, []byte(`#!/bin/sh
+calls="$(dirname "$0")/calls"
+echo "$@" >> "$calls"
+echo "pingy-stream 1 script"
+echo "@ r1"
+if [ "$(wc -l < "$calls")" -eq 1 ]; then
+	echo "+ 1 0 1000"
+	echo "+ 2 0 2000"
+else
+	echo "+ 2 3000 2000"
+	echo "+ 3 2000 3000"
+	echo "+ 4 1000 4000"
+	echo "+ 5 0 5000"
+	sleep 30
+fi
+`), 0o700)
+	t.Setenv("PINGY_SSH", fake)
+	m, err := Create(filepath.Join(home, "hosts"), "dns.example", "office", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := newUpkeep(m.Dir())
+	out, err := openSamples(m.SamplesPath(), up.limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.close()
+	stop := make(chan os.Signal)
+	done := make(chan error)
+	go func() { done <- runRemote(m, up, out, State{}, stop, nil) }()
+
+	h := NewHistory(m.SamplesPath(), 0)
+	deadline := time.Now().Add(20 * time.Second)
+	for h.Refresh(); len(h.Samples) < 5; h.Refresh() {
+		if time.Now().After(deadline) {
+			t.Fatalf("samples %+v", h.Samples)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	stop <- os.Interrupt
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	h.Refresh()
+	s := h.Samples
+	if len(s) != 5 {
+		t.Fatalf("samples %+v", s)
+	}
+	for i, x := range s {
+		if x.RTT != time.Duration(i+1)*time.Millisecond || i > 0 && !x.At.After(s[i-1].At) {
+			t.Fatalf("sample %d of %+v", i, s)
+		}
+	}
+	if gap := s[4].At.Sub(s[2].At); gap < 1500*time.Millisecond {
+		t.Fatalf("the missed pings aren't spread over when they were sent: %v", gap)
+	}
+	calls, _ := os.ReadFile(filepath.Join(home, "calls"))
+	first, second, _ := strings.Cut(string(calls), "\n")
+	if !strings.HasSuffix(first, "'-'") || !strings.HasSuffix(strings.TrimSpace(second), "'r1:2'") {
 		t.Fatalf("ssh was run as:\n%s", calls)
 	}
 }

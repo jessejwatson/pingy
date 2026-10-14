@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,15 +25,25 @@ import (
 //
 //	ssh <dest> sh -s -- <target> <interval ms> <since ms>
 //
+//	ssh <dest> sh -s -- <target> <interval ms> <since ms> <key> <from>
+//
 // with remote.sh on ssh's stdin. Where pingy is installed, the script
 // hands over to pingy __stream, which pings in the background there and
 // sends its history since <since ms>, so a connection that drops loses
-// nothing; anywhere else the script pings by itself, for as long as the
-// connection lasts. Either way, what comes back is lines of:
+// nothing. Anywhere else the script pings by itself, into a cache in
+// /tmp named by <key>, which outlives a dropped connection by a few
+// seconds: connecting again in time sends what's been cached since
+// <from>, "<run>:<number>" for the last ping had from it, or "-".
+// Either way, what comes back is lines of:
 //
 //	pingy-stream 1 <via>    first: "pingy" or "script"
 //	<unix ms> <rtt µs>      a ping, as in a samples file; "-" for the
 //	                        time means now, and -1 for the round trip lost
+//	@ <run>                 the script's pinger the next pings are from
+//	+ <number> <ago ms> <rtt µs>
+//	                        a ping from the script's cache: its number in
+//	                        the run, and how long before the newest so
+//	                        far it was sent
 //	= <address>             the address being pinged
 //	! <problem>             why pings can't be sent; just "!" when they can
 //	.                       nothing new, but still there; pingy __stream
@@ -272,13 +284,16 @@ func (m *Meta) Retry() {
 
 // RemoteCommand is the command that streams target's pings from another
 // machine: remote.sh, run by sh with its arguments quoted for the shell
-// at the other end.
-func RemoteCommand(target string, every time.Duration, since time.Time) (remote string, stdin io.Reader) {
+// at the other end. key and from are for the script's cache.
+func RemoteCommand(target string, every time.Duration, since time.Time, key, from string) (remote string, stdin io.Reader) {
 	sinceMs := int64(0)
 	if !since.IsZero() {
 		sinceMs = since.UnixMilli()
 	}
-	args := []string{target, strconv.FormatInt(every.Milliseconds(), 10), strconv.FormatInt(sinceMs, 10)}
+	if from == "" {
+		from = "-"
+	}
+	args := []string{target, strconv.FormatInt(every.Milliseconds(), 10), strconv.FormatInt(sinceMs, 10), key, from}
 	for i, a := range args {
 		args[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
 	}
@@ -287,10 +302,22 @@ func RemoteCommand(target string, every time.Duration, since time.Time) (remote 
 
 // streamLine is one line a remote sent.
 type streamLine struct {
-	kind   byte // 'h' header, 's' sample, '=' address, '!' problem
+	kind   byte // 'h' header, 's' sample, '=' address, '!' problem, '@' run
 	sample Sample
 	now    bool // the sample has no time of its own
 	text   string
+	// For a ping from the script's cache: its number, and how long before
+	// the newest it was sent.
+	seq int64
+	ago time.Duration
+}
+
+// cacheKey names the script's cache for m at its origin: the same for
+// every connection made for m on this machine, while it pings the same way.
+func cacheKey(m *Meta) string {
+	host, _ := os.Hostname()
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", host, m.Dir(), m.Target, m.Every().Milliseconds())))
+	return hex.EncodeToString(sum[:12])
 }
 
 func parseStreamLine(line string) (streamLine, bool) {
@@ -306,6 +333,24 @@ func parseStreamLine(line string) (streamLine, bool) {
 		return streamLine{kind: '=', text: strings.TrimSpace(line[1:])}, true
 	case strings.HasPrefix(line, "!"):
 		return streamLine{kind: '!', text: strings.TrimSpace(line[1:])}, true
+	case strings.HasPrefix(line, "@ "):
+		return streamLine{kind: '@', text: strings.TrimSpace(line[2:])}, true
+	case strings.HasPrefix(line, "+ "):
+		f := strings.Fields(line[2:])
+		if len(f) != 3 {
+			return streamLine{}, false
+		}
+		seq, err1 := strconv.ParseInt(f[0], 10, 64)
+		ago, err2 := strconv.ParseInt(f[1], 10, 64)
+		us, err3 := strconv.ParseInt(f[2], 10, 64)
+		if err1 != nil || err2 != nil || err3 != nil || ago < 0 {
+			return streamLine{}, false
+		}
+		l := streamLine{kind: 's', sample: Sample{RTT: -1}, now: true, seq: seq, ago: time.Duration(ago) * time.Millisecond}
+		if us >= 0 {
+			l.sample.RTT = time.Duration(us) * time.Microsecond
+		}
+		return l, true
 	}
 	when, rtt, ok := strings.Cut(line, " ")
 	if !ok {
@@ -338,8 +383,8 @@ type remoteConn struct {
 	stderr *bytes.Buffer
 }
 
-func dialRemote(home string, m *Meta, since time.Time) (*remoteConn, error) {
-	remote, in := RemoteCommand(m.Target, m.Every(), since)
+func dialRemote(home string, m *Meta, since time.Time, from string) (*remoteConn, error) {
+	remote, in := RemoteCommand(m.Target, m.Every(), since, cacheKey(m), from)
 	cmd := SSH(home, Dest(home, m.Origin), remote, in)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
@@ -397,6 +442,13 @@ func (c *remoteConn) end(origin string) (link, login string) {
 // A signal on retry cuts short its wait to connect again.
 func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop, retry <-chan os.Signal) error {
 	last := lastSampleTime(m.SamplesPath())
+	// The script's pinger, and the last ping had from it, for it to carry
+	// on from after connecting again.
+	var run string
+	var seq int64
+	// unknown is a run whose pings may already be here, sent before this
+	// monitor started, so they're placed only where there's nothing yet.
+	unknown := false
 	save := func(next State) {
 		if next != st {
 			st = next
@@ -417,7 +469,11 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop, retry <-cha
 		if up.check(&m, out) {
 			return nil
 		}
-		c, err := dialRemote(up.home, m, last)
+		from := ""
+		if run != "" {
+			from = run + ":" + strconv.FormatInt(seq, 10)
+		}
+		c, err := dialRemote(up.home, m, last, from)
 		if err != nil {
 			next := st
 			next.Link, next.Login = "can't run ssh: "+err.Error(), ""
@@ -467,10 +523,27 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop, retry <-cha
 					next.Addr, next.Error = l.text, ""
 				case '!':
 					next.Error, problem = l.text, l.text
+				case '@':
+					if l.text != run {
+						run, seq, unknown = l.text, 0, true
+					}
 				case 's':
 					s := l.sample
+					if l.seq > 0 {
+						if l.seq <= seq {
+							continue // already have it
+						}
+						seq = l.seq
+					}
 					if l.now {
-						s.At = time.Now()
+						// To the millisecond, as samples are kept.
+						s.At = time.Now().Add(-l.ago).Truncate(time.Millisecond)
+						if l.seq > 0 && l.ago == 0 {
+							unknown = false // caught up
+						}
+						if !s.At.After(last) && unknown {
+							continue // likely already have it
+						}
 						if !s.At.After(last) {
 							s.At = last.Add(time.Millisecond)
 						}

@@ -272,7 +272,7 @@ func (a *App) probe(name, dest string) (login string, err error) {
 	u := a.errUI()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	remote, in := monitor.RemoteCommand("--probe", time.Second, time.Time{})
+	remote, in := monitor.RemoteCommand("--probe", time.Second, time.Time{}, "", "")
 	cmd := monitor.SSH(a.Home, dest, remote, in)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

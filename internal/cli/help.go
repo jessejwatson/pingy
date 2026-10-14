@@ -95,7 +95,7 @@ pingy asks you to log in, and keeps that login open for every host pinged
 from there until the last is stopped. Where pingy is installed, it pings the host there in
 the background, so it carries on while you're away and catches up when
 you're back; pingy -k here leaves it running there. Anywhere else, a
-script pings it, only while you're connected.
+script pings it, only while you're connected, or reconnecting within 10s.
 
 A view is a group of hosts graphed together under a one-word name: pick
 them in the panel with ctrl-t, or run pingy -g with them, then press s to

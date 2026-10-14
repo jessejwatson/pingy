@@ -50,7 +50,10 @@ pingy is installed there, it pings the host in the background as
 `pingy <host> -d` would, so it carries on while you're away, and the gap is
 filled in when you're back; `pingy -k` here leaves it running there. If it
 isn't, a small shell script pings the host instead, for as long as the
-connection lasts, so nothing has to be installed.
+connection lasts, so nothing has to be installed. It keeps the last couple
+of minutes of pings in `/tmp` and carries on for 10 seconds after the
+connection drops, so a quick reconnect fills in the gap rather than showing
+it as lost; past that, it deletes them and stops.
 
 Each host is pinged by its own small background process, which uses the
 system's `ping`, so no special privileges are needed. Every result is kept in
