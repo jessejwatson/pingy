@@ -139,6 +139,6 @@ Environment:
   PINGY_HOME                    Where pingy keeps hosts; default ~/.config/pingy
   PINGY_SSH                     The ssh to run, e.g. "ssh -F ~/.ssh/other"
   PINGY_ICONS=nerd              Nerd Font icons
-  PINGY_NO_UPDATE_CHECK=1       Don't look once a day for a newer pingy
+  PINGY_NO_UPDATE_CHECK=1       Don't look every few hours for a newer pingy
   NO_COLOR                      Plain output
 `

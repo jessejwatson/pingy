@@ -47,9 +47,9 @@ func TestAvailableUpdate(t *testing.T) {
 	if latest, _ := a.availableUpdate(tapFormulaURL); latest != "" {
 		t.Fatalf("up to date, but offered %q", latest)
 	}
-	writeFileAtomic(updatePath(a.Home), updateFile{Checked: time.Now().Add(-25 * time.Hour), Source: tapFormulaURL, Latest: "0.1.11"})
+	writeFileAtomic(updatePath(a.Home), updateFile{Checked: time.Now().Add(-4 * time.Hour), Source: tapFormulaURL, Latest: "0.1.11"})
 	if latest, stale := a.availableUpdate(tapFormulaURL); latest != "0.1.11" || !stale {
-		t.Fatalf("a day old: %q stale %v", latest, stale)
+		t.Fatalf("hours old: %q stale %v", latest, stale)
 	}
 }
 

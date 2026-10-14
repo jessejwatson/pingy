@@ -13,14 +13,14 @@ import (
 	"time"
 )
 
-// pingy looks, at most once a day, for a newer version than its own, so
-// the panel can say there's one and how to get it. Through Homebrew,
+// pingy looks, at most every few hours, for a newer version than its own,
+// so the panel can say there's one and how to get it. Through Homebrew,
 // newer means in the tap's formula, as that's what brew upgrade installs;
 // otherwise it means a newer tag on GitHub.
 const (
 	tapFormulaURL = "https://raw.githubusercontent.com/jessejwatson/homebrew-tap/HEAD/Formula/pingy.rb"
 	tagsURL       = "https://api.github.com/repos/jessejwatson/pingy/tags?per_page=100"
-	updateEvery   = 24 * time.Hour
+	updateEvery   = 3 * time.Hour
 )
 
 // updateFile is what the last look found, kept between runs.
