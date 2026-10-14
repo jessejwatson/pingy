@@ -23,6 +23,7 @@ pingy                            # the panel
 pingy -k cloudflare              # stop one and delete its history
 pingy -p                         # pause them all, keeping their history
 pingy -r                         # start stopped ones again, e.g. after a restart
+pingy --autostart on             # or have them start again by themselves at login
 pingy --history                  # how much disk history takes
 pingy --history 128M             # keep up to 128 MB per host
 ```

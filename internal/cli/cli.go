@@ -83,7 +83,7 @@ func (a *App) Run(args []string) int {
 // opts is the parsed command line.
 type opts struct {
 	detach, list, graph, kill, pause, resume, all, history bool
-	origin                                                 bool
+	origin, autostart                                      bool
 	name                                                   string
 	interval                                               time.Duration
 	targets                                                []string
@@ -129,6 +129,11 @@ func parseArgs(args []string) (opts, error) {
 			}
 		case "--origin", "--origins":
 			o.origin = true
+		case "--autostart":
+			o.autostart = true
+			if hasInline {
+				o.targets = append(o.targets, inline)
+			}
 		case "--from":
 			v := inline
 			if !hasInline {
@@ -204,6 +209,11 @@ func (a *App) run(args []string) error {
 				return errors.New("can't tell where to keep pingy's data; set PINGY_HOME")
 			}
 			return a.cmdStream(args[1:])
+		case "__autostart":
+			if a.Home == "" {
+				return errors.New("can't tell where to keep pingy's data; set PINGY_HOME")
+			}
+			return a.cmdAutostartRun()
 		}
 	}
 	if a.Home == "" {
@@ -218,6 +228,12 @@ func (a *App) run(args []string) error {
 			return errors.New("use pingy --origin on its own, or with -k to delete one")
 		}
 		return a.cmdOrigin(o.targets, o.kill)
+	}
+	if o.autostart {
+		if o.list || o.graph || o.kill || o.pause || o.resume || o.history || o.detach || len(o.from) > 0 {
+			return errors.New("use pingy --autostart on its own, with on or off")
+		}
+		return a.cmdAutostart(o.targets)
 	}
 	if len(o.from) > 0 {
 		if len(o.targets) == 0 {
@@ -356,6 +372,12 @@ func (a *App) start(spec string, so startOpts) (m *monitor.Meta, already, create
 // spawn starts pingy __monitor for m in its own session, so it outlives
 // this terminal, and waits for it to be up.
 func (a *App) spawn(m *monitor.Meta) error {
+	if m.Paused {
+		m.Paused = false
+		if err := m.Save(); err != nil {
+			return err
+		}
+	}
 	// By a path that finds pingy again once it's updated, for the monitor
 	// to restart as.
 	exe, err := monitor.StableExe()
@@ -464,6 +486,7 @@ func (a *App) cmdWatch(target, name string, interval time.Duration) error {
 			return a.remove(fresh)
 		}
 		fresh.Foreground, fresh.Ephemeral, fresh.OwnerPID = false, false, 0
+		fresh.Paused = true
 		fresh.Save()
 		return fresh.Stop()
 	}

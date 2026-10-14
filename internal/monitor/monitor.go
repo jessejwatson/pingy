@@ -52,6 +52,9 @@ type Meta struct {
 	OwnerPID   int  `json:"owner_pid,omitempty"`
 	// Ephemeral is deleted, not just stopped, when its owner goes away.
 	Ephemeral bool `json:"ephemeral,omitempty"`
+	// Paused is a monitor someone stopped, as opposed to one a restart or
+	// logging out stopped: autostart leaves it be.
+	Paused bool `json:"paused,omitempty"`
 
 	dir string
 }

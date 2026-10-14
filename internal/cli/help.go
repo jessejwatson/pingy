@@ -64,6 +64,8 @@ Usage:
   pingy -p [host...]            Pause hosts (every host by default), keeping
                                 their history; pingy -r pings them again
   pingy -r [host...]            Ping paused hosts again, e.g. after a restart
+  pingy --autostart [on|off]    Start hosts again by themselves when you log
+                                in after a restart; paused ones stay paused
   pingy --history [size]        Show how much disk history takes, or set how
                                 much each host keeps, e.g. 64M or 1G; default
                                 32M, about two weeks at one ping a second

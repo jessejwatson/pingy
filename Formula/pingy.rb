@@ -19,7 +19,8 @@ class Pingy < Formula
       `pingy -g` graphs them all.
 
       `pingy -p` pauses every host, keeping their history. Background pings
-      also stop when you log out or restart; `pingy -r` starts them all again.
+      also stop when you log out or restart; `pingy -r` starts them all again,
+      or `pingy --autostart on` has them start again by themselves at login.
     EOS
   end
 

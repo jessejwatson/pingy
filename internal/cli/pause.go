@@ -19,10 +19,24 @@ func pauseAll(metas []*monitor.Meta) ([]*monitor.Meta, error) {
 	errs := make([]error, len(running))
 	var wg sync.WaitGroup
 	for i, m := range running {
-		wg.Go(func() { errs[i] = m.Stop() })
+		wg.Go(func() { errs[i] = pause(m) })
 	}
 	wg.Wait()
 	return running, errors.Join(errs...)
+}
+
+// pause stops m, keeping its history, and marks it paused so autostart
+// leaves it be.
+func pause(m *monitor.Meta) error {
+	fresh, err := m.Reload()
+	if err != nil {
+		return err
+	}
+	fresh.Paused = true
+	if err := fresh.Save(); err != nil {
+		return err
+	}
+	return fresh.Stop()
 }
 
 // resumeAll starts those of metas that are stopped again, all at once. It

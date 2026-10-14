@@ -688,7 +688,7 @@ func (m *model) toggleCmd(h *host) tea.Cmd {
 			return opMsg{err: err}
 		}
 		if meta.Running() {
-			if err := meta.Stop(); err != nil {
+			if err := pause(meta); err != nil {
 				return opMsg{err: err}
 			}
 			return opMsg{note: "Paused " + meta.Label() + "; its history is kept"}
