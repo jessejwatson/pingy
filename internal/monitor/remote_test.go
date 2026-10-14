@@ -237,7 +237,7 @@ func TestSSHSharesALogin(t *testing.T) {
 	}
 	login := strings.Join(Login(short, "office").Args, " ")
 	if strings.Contains(login, "BatchMode") || !strings.Contains(login, "ControlMaster=yes") ||
-		!strings.Contains(login, "ControlPersist=yes") || !strings.Contains(login, "-f -N") {
+		!strings.Contains(login, "ControlPersist=yes") || !strings.Contains(login, "-f -N") || !strings.Contains(login, "ServerAliveInterval") {
 		t.Fatalf("login ssh %s", login)
 	}
 }
@@ -271,6 +271,51 @@ func TestRetryCutsTheWaitShort(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if n := calls(); n != 2 {
 		t.Fatalf("%d connections, want 2 straight after the retry", n)
+	}
+	stop <- os.Interrupt
+	<-done
+}
+
+// TestStalledConnectionIsGivenUp: a connection that goes quiet is cut off
+// and tried again, and one that never answers ends the login it went
+// through, so the next try finds out it must log in again.
+func TestStalledConnectionIsGivenUp(t *testing.T) {
+	defer func(q, u time.Duration) { quietFor, unansweredFor = q, u }(quietFor, unansweredFor)
+	quietFor, unansweredFor = 500*time.Millisecond, time.Second
+	home := t.TempDir()
+	fake := filepath.Join(home, "fakessh")
+	// -O exit is CloseLogin; the first connection answers then hangs, the
+	// rest hang without a word.
+	os.WriteFile(fake, []byte(`#!/bin/sh
+dir=$(dirname "$0")
+case " $* " in *" -O exit "*) echo exit >> "$dir/closed"; exit 0 ;; esac
+echo x >> "$dir/calls"
+if [ "$(wc -l < "$dir/calls")" -eq 1 ]; then
+	echo "pingy-stream 1 pingy"
+	echo "- 1000"
+fi
+exec sleep 60
+`), 0o700)
+	t.Setenv("PINGY_SSH", fake)
+	m, _ := Create(filepath.Join(home, "hosts"), "1.1.1.1", "office", MinInterval)
+	up := newUpkeep(m.Dir())
+	out, _ := openSamples(m.SamplesPath(), up.limit)
+	defer out.close()
+	stop := make(chan os.Signal)
+	done := make(chan error)
+	go func() { done <- runRemote(m, up, out, State{}, stop, nil) }()
+	read := func(name string) string { b, _ := os.ReadFile(filepath.Join(home, name)); return string(b) }
+	for deadline := time.Now().Add(15 * time.Second); read("closed") == ""; {
+		if time.Now().After(deadline) {
+			t.Fatalf("login never ended; connected %d times, state %+v", strings.Count(read("calls"), "\n"), m.State())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if n := strings.Count(read("calls"), "\n"); n != 2 {
+		t.Fatalf("%d connections before ending the login, want 2", n)
+	}
+	if st := m.State(); st.Link != "no answer from office" {
+		t.Fatalf("state %+v", st)
 	}
 	stop <- os.Interrupt
 	<-done

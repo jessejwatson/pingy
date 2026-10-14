@@ -34,12 +34,27 @@ import (
 //	                        time means now, and -1 for the round trip lost
 //	= <address>             the address being pinged
 //	! <problem>             why pings can't be sent; just "!" when they can
+//	.                       nothing new, but still there; pingy __stream
+//	                        sends it every few seconds
 //
 //go:embed remote.sh
 var remoteScript string
 
 // StreamVersion is the version of the lines above.
 const StreamVersion = 1
+
+// StreamBeat is how often pingy __stream says it's still there.
+const StreamBeat = 5 * time.Second
+
+// A connection that goes quiet, with nothing to cut it off, is given up
+// on: once the remote has answered, after quietFor plus twice the
+// interval (the script only speaks when it pings); before, after
+// unansweredFor, and then the login it went through is ended too, as
+// it's likely stuck itself.
+var (
+	quietFor      = 20 * time.Second
+	unansweredFor = 20 * time.Second
+)
 
 // StreamHeader is the first line pingy __stream sends.
 func StreamHeader(via string) string { return fmt.Sprintf("pingy-stream %d %s", StreamVersion, via) }
@@ -223,7 +238,10 @@ func SSH(home, dest, remote string, in io.Reader) *exec.Cmd {
 // logging in again, until CloseLogin.
 func Login(home, dest string) *exec.Cmd {
 	prog, args := sshProg()
-	args = append(args, "-o", "ConnectTimeout=15", "-f", "-N")
+	args = append(args, "-o", "ConnectTimeout=15", "-f", "-N",
+		// The connections through it don't watch for it going quiet
+		// themselves, so it must, and end, for them to notice.
+		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3")
 	if cp := controlPath(home); cp != "" {
 		args = append(args, "-o", "ControlMaster=yes", "-o", "ControlPersist=yes", "-o", "ControlPath="+cp)
 	}
@@ -402,6 +420,7 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop, retry <-cha
 			continue
 		}
 		began, heard, problem := time.Now(), false, ""
+		lastLine, stalled := began, false
 		every, origin := m.Every(), m.Origin
 		tick := time.NewTicker(time.Second)
 	conn:
@@ -420,10 +439,15 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop, retry <-cha
 				if m.Every() != every || m.Origin != origin {
 					c.kill() // and connect again to ping the new way
 				}
+				if !stalled && (heard && time.Since(lastLine) > quietFor+2*every || !heard && time.Since(began) > unansweredFor) {
+					stalled = true
+					c.kill()
+				}
 			case line, ok := <-c.lines:
 				if !ok {
 					break conn
 				}
+				lastLine = time.Now()
 				l, ok := parseStreamLine(line)
 				if !ok {
 					continue
@@ -459,6 +483,14 @@ func runRemote(m *Meta, up *upkeep, out *sampleFile, st State, stop, retry <-cha
 		tick.Stop()
 		next := st
 		next.Link, next.Login = c.end(m.Origin)
+		if stalled {
+			next.Link, next.Login = "no answer from "+m.Origin, ""
+			if !heard {
+				// Connecting at all is stuck, likely in a login gone
+				// quiet: end it, so the next try finds out afresh.
+				CloseLogin(up.home, Dest(up.home, m.Origin))
+			}
+		}
 		if next.Login == "" && problem != "" && strings.HasPrefix(next.Link, "lost the connection") {
 			// It hung up over something it said: say that.
 			next.Link += ": " + problem

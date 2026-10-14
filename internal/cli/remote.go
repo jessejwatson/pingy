@@ -48,7 +48,7 @@ func (a *App) cmdStream(args []string) error {
 	if sinceMs > 0 {
 		since = time.UnixMilli(sinceMs)
 	}
-	addr, problem := "", ""
+	addr, problem, beat := "", "", time.Now()
 	keep := func() bool {
 		if _, err := os.Stat(m.Dir()); err != nil {
 			fmt.Fprintln(w, "! no longer pinged there")
@@ -69,6 +69,10 @@ func (a *App) cmdStream(args []string) error {
 		if p != problem {
 			problem = p
 			fmt.Fprintln(w, strings.TrimSpace("! "+p))
+		}
+		if time.Since(beat) >= monitor.StreamBeat {
+			beat = time.Now()
+			fmt.Fprintln(w, ".")
 		}
 		return true
 	}
