@@ -84,10 +84,15 @@ type model struct {
 	login     *loginPopup
 	loginSeen map[string]bool // origins, by ssh destination, whose popup has opened by itself
 
+	update updateMsg // a newer version, once one's found
+
 	quitting bool
 }
 
 type tickMsg struct{}
+
+// updateMsg is a newer version of pingy than this one, and how to get it.
+type updateMsg struct{ latest, how string }
 
 // opMsg is the result of something done in the background.
 type opMsg struct {
@@ -240,13 +245,25 @@ func (m *model) Init() tea.Cmd {
 	if m.quitting {
 		return tea.Quit
 	}
-	return tea.Batch(tick(), m.query.Focus())
+	cmds := []tea.Cmd{tick(), m.query.Focus()}
+	if a := m.app; a.updateCheckWanted() {
+		cmds = append(cmds, func() tea.Msg {
+			brew := viaBrew()
+			return updateMsg{a.checkUpdate(brew), upgradeCommand(brew)}
+		})
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		return m, nil
+	case updateMsg:
+		if msg.latest != "" {
+			m.update = msg
+		}
 		return m, nil
 	case tickMsg:
 		m.refresh()
@@ -1356,7 +1373,7 @@ func (m *model) renderPick() string {
 			lines[i] = fit(lines[i], leftW) + " " + p
 		}
 	}
-	return u.box(u.accent("pingy"), lines, W, H, colBorder)
+	return u.box(u.accent("pingy")+m.updateLabel(), lines, W, H, colBorder)
 }
 
 // historyLine says how much disk the hosts' history takes.
@@ -1508,7 +1525,7 @@ func (m *model) renderDetail() string {
 	}
 
 	lines = append(lines, keyLines...)
-	return u.box(u.accent("pingy"), lines, W, H, colBorder)
+	return u.box(u.accent("pingy")+m.updateLabel(), lines, W, H, colBorder)
 }
 
 // fmtSpan describes the time from start to end.
@@ -1553,4 +1570,14 @@ func (m *model) renderAll() string {
 	}
 	lines = append(lines[:max(H-len(keys), 0)], keys...)
 	return strings.Join(lines, "\n")
+}
+
+// updateLabel says, after the panel's title, that there's a newer version
+// and how to get it.
+func (m *model) updateLabel() string {
+	if m.update.latest == "" {
+		return ""
+	}
+	u := m.u
+	return "  " + u.fg(colOK, "●") + " " + u.bold("pingy "+m.update.latest+" is out: ") + u.bold(u.fg(colCmd, m.update.how))
 }
