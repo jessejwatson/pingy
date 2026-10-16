@@ -82,6 +82,7 @@ type model struct {
 	busy       bool
 
 	login     *loginPopup
+	outside   []*host         // pingy -g: hosts not in it, for what's waiting on a login
 	loginSeen map[string]bool // origins, by ssh destination, whose popup has opened by itself
 
 	update updateMsg // a newer version, once one's found
@@ -201,10 +202,11 @@ func (m *model) refresh() {
 		m.views = vs
 	}
 	m.settings, _ = monitor.LoadSettings(m.app.Home)
-	var hosts []*host
+	var hosts, outside []*host
 	seen := map[string]*host{}
 	for _, meta := range monitor.List(m.root) {
 		if m.only != nil && !m.only[meta.ID] {
+			outside = append(outside, &host{meta: meta, state: meta.State(), running: meta.Running()})
 			continue
 		}
 		h := m.byID[meta.ID]
@@ -220,7 +222,7 @@ func (m *model) refresh() {
 		hosts = append(hosts, h)
 		seen[meta.ID] = h
 	}
-	m.hosts, m.byID = hosts, seen
+	m.hosts, m.byID, m.outside = hosts, seen, outside
 	for id := range m.picked {
 		if seen[id] == nil {
 			delete(m.picked, id)
@@ -293,6 +295,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case loginOutMsg, loginEndMsg:
 		return m.loginMsg(msg)
+	case tea.PasteMsg:
+		// Pasted text, e.g. a password, goes to ssh as typed.
+		if m.login != nil && m.login.sess != nil {
+			m.login.sess.write(msg.Content)
+			return m, nil
+		}
 	case tea.KeyPressMsg:
 		if m.login != nil {
 			return m.keyLogin(msg)
@@ -333,6 +341,7 @@ func (m *model) open(h *host) {
 	m.cur, m.view, m.mode = h, viewDetail, ""
 	m.win = window{step: fitStep(time.Second, h.meta.Every()), live: true}
 	m.query.Blur()
+	m.enterLogin(h)
 }
 
 // openPicked shows the picked hosts' graphs together, as pingy -g does.
@@ -344,6 +353,9 @@ func (m *model) openPicked() {
 	}
 	m.win = window{step: time.Second, live: true}
 	m.query.Blur()
+	for _, h := range m.panels() {
+		m.enterLogin(h)
+	}
 }
 
 // viewHosts are the hosts of v still being pinged, and how many aren't.
@@ -1087,6 +1099,10 @@ func (m *model) allKeys(fits int) []string {
 		lines[0] = u.fg(colAccent, "View name: ") + m.input.View() + u.faint("  enter save · esc cancel")
 	case m.note != "":
 		lines[0] = m.noteLine()
+	case m.noteLine() != "":
+		// What's waiting on a login stays a while, so it goes above the
+		// keys rather than over them.
+		lines = append([]string{m.noteLine()}, lines...)
 	}
 	return lines
 }
@@ -1216,8 +1232,12 @@ func (m *model) View() tea.View {
 	return v
 }
 
+// noteLine is the last thing done, or else what's waiting on a login.
 func (m *model) noteLine() string {
 	if m.note == "" {
+		if n := m.loginNote(); n != "" {
+			return m.u.fg(colWarn, n)
+		}
 		return ""
 	}
 	if m.noteBad {
@@ -1344,7 +1364,7 @@ func (m *model) renderPick() string {
 		left[len(left)-1] = u.fg(colBad, "Delete the view "+m.targetView+"? Its hosts keep pinging. y/n")
 	case m.mode == "kill" && m.target != nil:
 		left[len(left)-1] = u.fg(colBad, "Stop pinging "+m.target.meta.Label()+" and delete its history? y/n")
-	case m.note == "" && len(m.hosts) > 0:
+	case m.noteLine() == "" && len(m.hosts) > 0:
 		left[len(left)-1] = u.faint(m.historyLine())
 	}
 

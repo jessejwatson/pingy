@@ -123,7 +123,8 @@ In a graph:
   home · end                    Oldest · now, following new pings
   + -                           Zoom in and out
   n · p · x                     Rename · pause or resume · stop and delete
-  ctrl-l                        Log in to the host's origin
+  ctrl-l                        Log in to the host's origin, or to one a host
+                                not shown is waiting on
   esc                           Back
 
 In pingy -g, or hosts picked together, as in a graph, plus:

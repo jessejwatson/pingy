@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -11,8 +13,9 @@ import (
 )
 
 // loginPopup is the panel over the others for logging in to an origin:
-// why, then ssh's own prompts while it runs. It opens by itself once
-// when an origin's hosts first need it, and with ctrl-l on one of them.
+// why, then ssh's own prompts while it runs. It opens by itself when a
+// host needing it is entered from the picker, once when a graph shown
+// starts needing it, and with ctrl-l.
 type loginPopup struct {
 	origin, dest string
 	kind         string // a monitor Login kind, or "" when asked for
@@ -29,7 +32,9 @@ func needsLogin(h *host) bool {
 }
 
 // checkLogins opens the popup by itself for an origin whose hosts have
-// started needing a login, once until they stop needing it.
+// started needing a login, once until they stop needing it, but only for
+// a host whose graph is shown: others wait in loginNote, and the picker
+// leaves it until the host is entered.
 func (m *model) checkLogins() {
 	stuck := map[string]*host{}
 	for _, h := range m.hosts {
@@ -49,7 +54,7 @@ func (m *model) checkLogins() {
 		return
 	}
 	for _, h := range m.hosts {
-		if needsLogin(h) {
+		if needsLogin(h) && m.onScreen(h) {
 			dest := monitor.Dest(m.app.Home, h.meta.Origin)
 			if !m.loginSeen[dest] {
 				m.loginSeen[dest] = true
@@ -58,6 +63,63 @@ func (m *model) checkLogins() {
 			}
 		}
 	}
+}
+
+// onScreen says whether h's graph is shown: open by itself, or one of
+// pingy -g's panels.
+func (m *model) onScreen(h *host) bool {
+	switch m.view {
+	case viewDetail:
+		return m.cur == h
+	case viewAll:
+		return slices.Contains(m.panels(), h)
+	}
+	return false
+}
+
+// enterLogin opens the popup on entering h's graph if h needs a login.
+func (m *model) enterLogin(h *host) {
+	if needsLogin(h) && m.login == nil {
+		m.loginSeen[monitor.Dest(m.app.Home, h.meta.Origin)] = true
+		m.openLogin(h)
+	}
+}
+
+// offScreenLogins are the hosts needing a login that aren't on screen,
+// pingy -g's others included, one per origin, unless a host on screen
+// needs that origin too.
+func (m *model) offScreenLogins() []*host {
+	var hs []*host
+	seen := map[string]bool{}
+	for _, h := range m.hosts {
+		if needsLogin(h) && m.onScreen(h) {
+			seen[monitor.Dest(m.app.Home, h.meta.Origin)] = true
+		}
+	}
+	for _, h := range append(m.hosts[:len(m.hosts):len(m.hosts)], m.outside...) {
+		if dest := monitor.Dest(m.app.Home, h.meta.Origin); needsLogin(h) && !seen[dest] {
+			seen[dest] = true
+			hs = append(hs, h)
+		}
+	}
+	return hs
+}
+
+// loginNote says, over graphs, that hosts not shown are waiting on a
+// login, and how to give it. The picker marks them in its list instead.
+func (m *model) loginNote() string {
+	if m.view == viewPick {
+		return ""
+	}
+	hs := m.offScreenLogins()
+	if len(hs) == 0 {
+		return ""
+	}
+	who := hs[0].meta.Origin + " needs"
+	if len(hs) > 1 {
+		who = fmt.Sprintf("%s and %d other origins need", hs[0].meta.Origin, len(hs)-1)
+	}
+	return "Hosts not shown are waiting: " + who + " you to log in · ctrl-l to answer"
 }
 
 func (m *model) openLogin(h *host) {
@@ -85,9 +147,13 @@ func (m *model) chosenHost() *host {
 	return nil
 }
 
-// keyLoginOpen is ctrl-l: the popup for the chosen host's origin.
+// keyLoginOpen is ctrl-l: the popup for the chosen host's origin, or
+// for one off screen that's waiting when the chosen host isn't.
 func (m *model) keyLoginOpen() {
 	h := m.chosenHost()
+	if waiting := m.offScreenLogins(); len(waiting) > 0 && (h == nil || !needsLogin(h)) {
+		h = waiting[0]
+	}
 	switch {
 	case h == nil:
 	case h.meta.Origin == "":
@@ -182,7 +248,9 @@ func (m *model) overLogin(s string) string {
 	}
 	var lines []string
 	if p.link != "" {
-		lines = append(lines, u.fg(border, ansi.Wrap(p.link, inner, "")))
+		for _, l := range wrap(p.link) {
+			lines = append(lines, u.fg(border, l))
+		}
 	}
 	lines = append(lines, wrap(loginWhy(p.kind, p.origin, p.dest))...)
 	lines = append(lines, "")
