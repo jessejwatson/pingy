@@ -1,8 +1,8 @@
 class Pingy < Formula
   desc "Ping many hosts at once in the background, and graph them in the terminal"
   homepage "https://github.com/jessejwatson/pingy"
-  url "https://github.com/jessejwatson/pingy/archive/refs/tags/v0.1.13.tar.gz"
-  sha256 "8ed63200c13485ebed7dacafb176bf7b1b611ab1602b63d817d5994231a761da"
+  url "https://github.com/jessejwatson/pingy/archive/refs/tags/v0.1.14.tar.gz"
+  sha256 "fbada00ec8bd13d86fc9542183c219dafc5a576796478b6d3a408480d966552c"
   license "MIT"
   head "https://github.com/jessejwatson/pingy.git", branch: "main"
 
