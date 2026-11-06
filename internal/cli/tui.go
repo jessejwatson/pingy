@@ -73,9 +73,10 @@ type model struct {
 	before   map[string]bool // what was picked then, for esc to go back to
 	wasMulti bool            // and whether the picker was picking several
 
-	mode       string // "", "rename", "save", "kill" or "history"
-	target     *host  // what ctrl-x in the picker would kill
-	targetView string // or the view it would delete
+	mode       string  // "", "rename", "save", "kill" or "history"
+	target     *host   // what ctrl-x in the picker would kill
+	targets    []*host // or the hosts picked, all together
+	targetView string  // or the view it would delete
 	input      textinput.Model
 	note       string
 	noteBad    bool
@@ -477,6 +478,18 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.refresh()
 			return m, nil
 		}
+		if (k == "y" || k == "Y") && len(m.targets) > 0 {
+			hs := m.targets
+			m.busy, m.note = true, fmt.Sprintf("Stopping %d %s…", len(hs), plural(len(hs), "host", "hosts"))
+			return m, func() tea.Msg {
+				// One at a time, so the last host from an origin closes its login.
+				var errs []error
+				for _, h := range hs {
+					errs = append(errs, m.app.remove(h.meta))
+				}
+				return opMsg{note: fmt.Sprintf("Stopped pinging %d %s and deleted their history", len(hs), plural(len(hs), "host", "hosts")), err: errors.Join(errs...)}
+			}
+		}
 		if (k == "y" || k == "Y") && m.target != nil {
 			h := m.target
 			m.busy, m.note = true, "Stopping "+h.meta.Label()+"…"
@@ -564,6 +577,15 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.clearPicks()
 				return m, nil
 			}
+		case "ctrl+x":
+			if hs := m.pickedHosts(); len(hs) > 0 {
+				m.mode, m.target, m.targets, m.targetView = "kill", nil, hs, ""
+				return m, nil
+			}
+		case "ctrl+p":
+			if hs := m.pickedHosts(); len(hs) > 0 {
+				return m, m.toggleAllCmd(hs, fmt.Sprintf("%d picked %s", len(hs), plural(len(hs), "host", "hosts")))
+			}
 		}
 	}
 	switch k {
@@ -611,7 +633,7 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "ctrl+x":
 		if len(rows) > 0 && (rows[m.cursor].h != nil || rows[m.cursor].v != nil) {
-			m.mode, m.target, m.targetView = "kill", rows[m.cursor].h, ""
+			m.mode, m.target, m.targets, m.targetView = "kill", rows[m.cursor].h, nil, ""
 			if v := rows[m.cursor].v; v != nil {
 				m.targetView = v.Name
 			}
@@ -648,6 +670,17 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cursor, m.note = 0, ""
 	}
 	return m, cmd
+}
+
+// pickedHosts are the hosts picked, in the picker's order.
+func (m *model) pickedHosts() []*host {
+	var hs []*host
+	for _, h := range m.hosts {
+		if m.picked[h.meta.ID] {
+			hs = append(hs, h)
+		}
+	}
+	return hs
 }
 
 // clearPicks forgets the hosts picked, and their view and order.
@@ -1277,6 +1310,9 @@ func (m *model) renderPick() string {
 	if m.multi {
 		count = u.fg(colAccent, fmt.Sprintf("%d picked ", len(m.picked))) + count
 		keys = []string{"tab pick", "enter graph them", "esc done"}
+		if len(m.picked) > 0 {
+			keys = []string{"tab pick", "enter graph them", "ctrl-x kill them", "ctrl-p pause them", "esc done"}
+		}
 		if m.adding {
 			keys = []string{"tab add or remove", "enter done", "esc cancel"}
 			if m.viewName != "" {
@@ -1362,6 +1398,9 @@ func (m *model) renderPick() string {
 		left[len(left)-1] = u.fg(colAccent, "History per host: ") + m.input.View()
 	case m.mode == "kill" && m.targetView != "":
 		left[len(left)-1] = u.fg(colBad, "Delete the view "+m.targetView+"? Its hosts keep pinging. y/n")
+	case m.mode == "kill" && len(m.targets) > 0:
+		n := len(m.targets)
+		left[len(left)-1] = u.fg(colBad, fmt.Sprintf("Stop pinging %d %s and delete their history? y/n", n, plural(n, "host", "hosts")))
 	case m.mode == "kill" && m.target != nil:
 		left[len(left)-1] = u.fg(colBad, "Stop pinging "+m.target.meta.Label()+" and delete its history? y/n")
 	case m.noteLine() == "" && len(m.hosts) > 0:

@@ -541,3 +541,32 @@ func TestChosenGraphStandsOut(t *testing.T) {
 		t.Fatalf("%d heavy panels; want 1", n)
 	}
 }
+
+// With hosts picked, ctrl-p and ctrl-x act on them all, not the chosen row.
+func TestPickedHostsPauseAndKillTogether(t *testing.T) {
+	a, _ := testApp(t, "1.1.1.1", "8.8.8.8", "9.9.9.9")
+	m := newPickModel(a)
+	press(m, "ctrl+t", "tab", "tab")
+	if s := m.renderPick(); !strings.Contains(s, "ctrl-x kill them") {
+		t.Fatalf("keys don't offer killing the picked hosts:\n%s", s)
+	}
+	// The commands returned aren't run, so nothing is really started.
+	press(m, "ctrl+p")
+	if !m.busy || !strings.Contains(m.note, "2 picked hosts") {
+		t.Fatalf("ctrl-p with hosts picked: busy %v note %q", m.busy, m.note)
+	}
+	m.busy = false
+	press(m, "ctrl+x")
+	if m.mode != "kill" || len(m.targets) != 2 || m.target != nil {
+		t.Fatalf("ctrl-x with hosts picked: mode %q targets %d target %v", m.mode, len(m.targets), m.target)
+	}
+	if s := m.renderPick(); !strings.Contains(s, "Stop pinging 2 hosts") {
+		t.Fatalf("no confirmation for the picked hosts:\n%s", s)
+	}
+	_, cmd := m.Update(key("y"))
+	m.Update(cmd())
+	got := targetsOf(monitor.List(a.root()))
+	if m.noteBad || !slices.Equal(got, []string{"9.9.9.9"}) || len(m.picked) != 0 {
+		t.Fatalf("after y: %v left, picked %v, note %q", got, m.picked, m.note)
+	}
+}

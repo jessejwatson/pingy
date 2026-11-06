@@ -113,8 +113,9 @@ In the panel:
   ctrl-l                        Log in to the chosen host's origin, e.g. to
                                 accept its key or type a password
   ctrl-t                        Pick several hosts: tab picks the chosen one
-                                (or a view's), enter graphs them together, esc
-                                stops picking
+                                (or a view's), enter graphs them together,
+                                ctrl-x · ctrl-p stop and delete · pause or
+                                resume them all, esc stops picking
   esc                           Quit
 
 In a graph:
