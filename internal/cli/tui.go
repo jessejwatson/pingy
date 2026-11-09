@@ -72,8 +72,9 @@ type model struct {
 	adding   bool            // in the picker from a's "add or remove hosts"
 	before   map[string]bool // what was picked then, for esc to go back to
 	wasMulti bool            // and whether the picker was picking several
+	addFrom  *host           // the host whose graph a was pressed in, if it was
 
-	mode       string  // "", "rename", "save", "kill" or "history"
+	mode       string  // "", "rename", "save", "kill", "history" or "keep"
 	target     *host   // what ctrl-x in the picker would kill
 	targets    []*host // or the hosts picked, all together
 	targetView string  // or the view it would delete
@@ -81,6 +82,7 @@ type model struct {
 	note       string
 	noteBad    bool
 	busy       bool
+	keepNever  bool // in keep's popup: don't ask again
 
 	login     *loginPopup
 	outside   []*host         // pingy -g: hosts not in it, for what's waiting on a login
@@ -98,11 +100,14 @@ type updateMsg struct{ latest, how string }
 
 // opMsg is the result of something done in the background.
 type opMsg struct {
-	note string
-	err  error
-	open string // a host to open
-	back bool   // go back to the picker
-	quit bool
+	note    string
+	err     error
+	open    string   // a host to open
+	pick    string   // or to pick, while adding hosts
+	done    bool     // and then graph those picked
+	started *session // a host pingy <host> started with it
+	back    bool     // go back to the picker
+	quit    bool
 }
 
 func tick() tea.Cmd { return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return tickMsg{} }) }
@@ -293,6 +298,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fromPick = true
 			m.open(h)
 		}
+		if msg.started != nil && m.sess != nil {
+			m.sess.added = append(m.sess.added, msg.started)
+		}
+		if h := m.byID[msg.pick]; h != nil && m.adding {
+			if !m.picked[h.meta.ID] {
+				m.picked[h.meta.ID] = true
+				m.order = append(m.order, h.meta.ID)
+			}
+			if msg.done {
+				m.doneAdding()
+			}
+		}
 		return m, nil
 	case loginOutMsg, loginEndMsg:
 		return m.loginMsg(msg)
@@ -311,11 +328,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.String() == "ctrl+c" {
-			m.quitting = true
-			return m, tea.Quit
+			return m.quit()
 		}
 		if m.busy {
 			return m, nil
+		}
+		if m.mode == "keep" {
+			return m.keyKeep(msg)
 		}
 		switch m.view {
 		case viewPick:
@@ -531,18 +550,27 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.adding {
 		switch k {
-		case "enter":
-			if len(m.picked) == 0 {
-				m.note, m.noteBad = "Pick at least one host", true
-				return m, nil
+		case "tab", "enter":
+			// A host typed that isn't pinged yet starts, and is picked.
+			if len(rows) > 0 && rows[m.cursor].add != "" {
+				r := rows[m.cursor]
+				m.busy, m.note, m.noteBad = true, "Starting "+r.add+"…", false
+				m.query.SetValue("")
+				m.cursor = 0
+				return m, m.addCmd(r.add, k == "enter")
 			}
-			m.adding, m.multi, m.before, m.note = false, m.wasMulti, nil, ""
-			m.openPicked()
-			m.saveOrder()
+			if k == "tab" {
+				break
+			}
+			m.doneAdding()
 			return m, nil
 		case "esc":
 			if m.query.Value() == "" {
 				m.adding, m.multi, m.picked, m.before, m.note = false, m.wasMulti, m.before, nil, ""
+				if m.addFrom != nil {
+					m.backToDetail()
+					return m, nil
+				}
 				m.openPicked()
 				return m, nil
 			}
@@ -557,7 +585,11 @@ func (m *model) keyPick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.togglePick(rows[m.cursor])
 			}
 			if k == "tab" {
-				m.cursor = min(m.cursor+1, max(len(rows)-1, 0))
+				last := len(rows) - 1
+				if m.adding && last > 0 && rows[last].add != "" {
+					last-- // enter there would start it rather than finish
+				}
+				m.cursor = min(m.cursor+1, max(last, 0))
 			} else {
 				m.cursor = max(m.cursor-1, 0)
 			}
@@ -706,6 +738,24 @@ func (m *model) togglePick(r pickRow) {
 		} else {
 			m.picked[h.meta.ID] = true
 		}
+	}
+}
+
+// addCmd starts pinging target, to pick it while adding hosts, and to
+// graph them all then if done. In pingy <host> it's pinged only while
+// this pingy is open, as the host is; otherwise in the background.
+func (m *model) addCmd(target string, done bool) tea.Cmd {
+	a, fg := m.app, m.sess != nil
+	return func() tea.Msg {
+		meta, already, created, err := a.start(target, startOpts{foreground: fg})
+		if err != nil {
+			return opMsg{err: err}
+		}
+		msg := opMsg{pick: meta.ID, done: done}
+		if fg && !already {
+			msg.started = &session{meta: meta, owned: true, created: created}
+		}
+		return msg
 	}
 }
 
@@ -911,22 +961,17 @@ func (m *model) keyDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch k {
 	case "esc", "q", "backspace":
 		if m.sess != nil || !m.fromPick {
-			m.quitting = true
-			return m, tea.Quit
+			return m.quit()
 		}
 		m.view, m.cur, m.note = viewPick, nil, ""
 		return m, m.query.Focus()
 	case "d":
 		if m.sess != nil {
-			if m.sess.owned {
-				if err := m.sess.detach(); err != nil {
-					m.note, m.noteBad = err.Error(), true
-					return m, nil
-				}
-			}
-			m.quitting = true
-			return m, tea.Quit
+			return m.detachQuit()
 		}
+	case "a":
+		m.addFrom, m.viewName = h, ""
+		return m, m.addMore([]*host{h})
 	case "n":
 		m.mode, m.note = "rename", ""
 		m.input.SetValue(h.meta.Label())
@@ -1044,9 +1089,8 @@ func (m *model) remove() {
 	m.saveOrder()
 }
 
-// addMore goes to the picker with these hosts picked, to add or remove some.
-func (m *model) addMore() tea.Cmd {
-	hs := m.panels()
+// addMore goes to the picker with hs picked, to add or remove some.
+func (m *model) addMore(hs []*host) tea.Cmd {
 	m.picked = map[string]bool{}
 	m.order = nil
 	for _, h := range hs {
@@ -1061,6 +1105,39 @@ func (m *model) addMore() tea.Cmd {
 	m.query.SetValue("")
 	m.cursor = 0
 	return m.query.Focus()
+}
+
+// doneAdding graphs the hosts picked after a, or goes back to the one graph
+// a was pressed in if nothing was added to it.
+func (m *model) doneAdding() {
+	if len(m.picked) == 0 {
+		m.note, m.noteBad = "Pick at least one host", true
+		return
+	}
+	if h := m.addFrom; h != nil && (len(m.picked) > 1 || !m.picked[h.meta.ID]) {
+		m.addFrom, m.cur = nil, nil
+		if m.sess != nil {
+			m.sess.grouped = true
+		}
+	}
+	m.adding, m.multi, m.before, m.note = false, m.wasMulti, nil, ""
+	if m.addFrom != nil {
+		m.backToDetail()
+		return
+	}
+	m.openPicked()
+	m.saveOrder()
+}
+
+// backToDetail leaves the picker for the graph a was pressed in, as it was.
+func (m *model) backToDetail() {
+	m.picked, m.order, m.addFrom = map[string]bool{}, nil, nil
+	m.query.SetValue("")
+	if m.cur == nil { // killed from the picker meanwhile
+		return
+	}
+	m.view, m.mode = viewDetail, ""
+	m.query.Blur()
 }
 
 // minPanelH is the shortest a host's panel gets in pingy -g, which leaves
@@ -1105,9 +1182,14 @@ func (m *model) allKeys(fits int) []string {
 	if h := m.chosenHost(); h != nil && needsLogin(h) {
 		hints = append(hints, u.fg(colWarn, "ctrl-l log in"))
 	}
-	if m.fromPick {
+	switch {
+	case m.sess != nil && len(m.sess.started()) > 0:
+		hints = append(hints, "d detach", "q stop & quit")
+	case m.sess != nil:
+		hints = append(hints, "q quit")
+	case m.fromPick:
 		hints = append(hints, "esc back")
-	} else {
+	default:
 		hints = append(hints, "q quit")
 	}
 	if len(hosts) > fits {
@@ -1182,6 +1264,9 @@ func (m *model) keyAll(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	_, fits := m.allLayout()
 	switch k {
 	case "esc", "q", "backspace":
+		if m.sess != nil {
+			return m.quit()
+		}
 		if m.fromPick {
 			m.view, m.fromPick = viewPick, false
 			if !m.multi {
@@ -1214,7 +1299,11 @@ func (m *model) keyAll(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.focus = 0
 		m.showFocus()
 	case "a":
-		return m, m.addMore()
+		return m, m.addMore(m.panels())
+	case "d":
+		if m.sess != nil {
+			return m.detachQuit()
+		}
 	case "p":
 		if len(hosts) > 0 {
 			what := "these hosts"
@@ -1259,6 +1348,9 @@ func (m *model) View() tea.View {
 	}
 	if m.login != nil {
 		s = m.overLogin(s)
+	}
+	if m.mode == "keep" && m.sess != nil {
+		s = m.overKeep(s)
 	}
 	v := tea.NewView(s)
 	v.AltScreen = true
@@ -1417,10 +1509,14 @@ func (m *model) renderPick() string {
 			preview = m.viewPreview(rows[m.cursor].v, rightW, innerH)
 		case rows[m.cursor].add != "":
 			t := rows[m.cursor].add
-			preview = strings.Split(u.box(u.accent("+ "+t), []string{
-				"Press enter to start pinging " + u.bold(t) + " in the background,",
-				"then watch it here.",
-			}, rightW, innerH, colBorder), "\n")
+			say := []string{"Press enter to start pinging " + u.bold(t) + " in the background,", "then watch it here."}
+			switch {
+			case m.adding && m.sess != nil:
+				say = []string{"Press enter to start pinging " + u.bold(t) + " while pingy is", "open and graph it with the others, or tab to pick it", "and add more."}
+			case m.adding:
+				say = []string{"Press enter to start pinging " + u.bold(t) + " in the background", "and graph it with the others, or tab to pick it and", "add more."}
+			}
+			preview = strings.Split(u.box(u.accent("+ "+t), say, rightW, innerH, colBorder), "\n")
 		default:
 			preview = u.hostPanel(rows[m.cursor].h, now, window{step: time.Second, live: true}, rightW, innerH, false)
 		}
@@ -1551,7 +1647,7 @@ func (m *model) renderDetail() string {
 		spread(u.faint(span+" · "+fmtStep(step)+" per column · "+monitor.FormatBytes(h.hist.Size())+" of history"), when, innerW),
 		"",
 	}
-	keys := []string{"←→ move", "shift-←→ page", "home/end", "+/- zoom", "n rename", "p pause", "x kill"}
+	keys := []string{"←→ move", "shift-←→ page", "home/end", "+/- zoom", "a add", "n rename", "p pause", "x kill"}
 	if needsLogin(h) {
 		keys = append([]string{u.fg(colWarn, "ctrl-l log in")}, keys...)
 	}

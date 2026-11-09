@@ -209,6 +209,11 @@ func (a *App) run(args []string) error {
 				return errors.New("can't tell where to keep pingy's data; set PINGY_HOME")
 			}
 			return a.cmdStream(args[1:])
+		case "config":
+			if a.Home == "" {
+				return errors.New("can't tell where to keep pingy's data; set PINGY_HOME")
+			}
+			return a.cmdConfig(args[1:])
 		case "__autostart":
 			if a.Home == "" {
 				return errors.New("can't tell where to keep pingy's data; set PINGY_HOME")
@@ -470,49 +475,79 @@ func (a *App) cmdWatch(target, name string, interval time.Duration) error {
 		return err
 	}
 	u := a.errUI()
-	switch {
-	case s.killed:
+	if s.killed {
 		a.done("Stopped pinging %s and deleted its history", u.bold(m.Label()))
-	case !s.owned:
-	case s.detached:
-		a.done("Still pinging %s in the background", u.bold(s.meta.Label()))
-		a.hint("  pingy -l to list · pingy to open")
-	default:
-		fresh, err := s.meta.Reload()
-		if err != nil {
-			return nil
+	}
+	started := s.started()
+	if len(started) == 0 {
+		return nil
+	}
+	if s.detached {
+		var names []string
+		for _, o := range started {
+			names = append(names, u.bold(o.meta.Label()))
 		}
-		if created {
-			return a.remove(fresh)
+		a.done("Still pinging %s in the background", strings.Join(names, ", "))
+		a.hint("  pingy -l to list · pingy to open")
+		return nil
+	}
+	var errs []error
+	for _, o := range started {
+		fresh, err := o.meta.Reload()
+		if err != nil {
+			continue
+		}
+		if o.created {
+			errs = append(errs, a.remove(fresh))
+			continue
 		}
 		fresh.Foreground, fresh.Ephemeral, fresh.OwnerPID = false, false, 0
 		fresh.Paused = true
 		fresh.Save()
-		return fresh.Stop()
+		errs = append(errs, fresh.Stop())
 	}
+	return errors.Join(errs...)
+}
+
+// detach makes the session's foreground monitors carry on after pingy
+// exits.
+func (s *session) detach() error {
+	for _, o := range s.started() {
+		if _, err := os.Stat(o.meta.Dir()); err != nil {
+			continue // killed meanwhile
+		}
+		fresh, err := o.meta.Reload()
+		if err != nil {
+			return err
+		}
+		fresh.Foreground, fresh.Ephemeral, fresh.OwnerPID = false, false, 0
+		if err := fresh.Save(); err != nil {
+			return err
+		}
+		o.meta = fresh
+	}
+	s.detached = true
 	return nil
 }
 
-// detach makes a foreground monitor carry on after pingy exits.
-func (s *session) detach() error {
-	fresh, err := s.meta.Reload()
-	if err != nil {
-		return err
+// started are the monitors this pingy started, which stop when it exits
+// unless detached.
+func (s *session) started() []*session {
+	var ss []*session
+	if s.owned && !s.killed {
+		ss = append(ss, s)
 	}
-	fresh.Foreground, fresh.Ephemeral, fresh.OwnerPID = false, false, 0
-	if err := fresh.Save(); err != nil {
-		return err
-	}
-	s.meta, s.detached = fresh, true
-	return nil
+	return append(ss, s.added...)
 }
 
 // session is a pingy <host> run: whether it started the monitor, and how
 // it was left.
 type session struct {
 	meta     *monitor.Meta
-	owned    bool // started by this pingy, so q stops it
-	created  bool // new, so q deletes it
+	owned    bool       // started by this pingy, so q stops it
+	created  bool       // new, so q deletes it
+	added    []*session // hosts a started alongside it, stopped with it
+	grouped  bool       // a graphed other hosts with it
 	detached bool
 	killed   bool
 }

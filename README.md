@@ -11,7 +11,10 @@ enter to graph them; press `s` there to save them as a view, which
 `pingy -g <view>` opens again.
 
 `pingy <host>` without `-d` pings a host and shows its graph straight away;
-press `d` to leave it running in the background, or `q` to stop.
+press `d` to leave it running in the background, or `q` to stop. Press `a`
+to graph other hosts with it; new ones are pinged only while it's open too,
+and `q` asks whether to keep them (`pingy config ask-to-keep off` stops
+asking).
 
 ```sh
 pingy 1.1.1.1 -d -n cloudflare   # in the background, named
@@ -26,6 +29,7 @@ pingy -r                         # start stopped ones again, e.g. after a restar
 pingy --autostart on             # or have them start again by themselves at login
 pingy --history                  # how much disk history takes
 pingy --history 128M             # keep up to 128 MB per host
+pingy config                     # show pingy's settings
 ```
 
 ## From other machines

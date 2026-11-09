@@ -28,6 +28,9 @@ type Settings struct {
 	// HistoryMB caps each host's samples file, in MB (2^20 bytes); once
 	// it's reached, the oldest quarter is dropped.
 	HistoryMB int `json:"history_mb,omitempty"`
+	// NoKeepAsk skips asking, on quitting pingy <host> with hosts added to
+	// it, whether to keep them pinging; they stop, as q stops the host.
+	NoKeepAsk bool `json:"no_keep_ask,omitempty"`
 }
 
 func settingsPath(home string) string { return filepath.Join(home, "settings.json") }

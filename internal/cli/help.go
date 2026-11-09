@@ -69,6 +69,9 @@ Usage:
   pingy --history [size]        Show how much disk history takes, or set how
                                 much each host keeps, e.g. 64M or 1G; default
                                 32M, about two weeks at one ping a second
+  pingy config [name] [on|off]  Show pingy's settings, or turn one on or off:
+                                ask-to-keep asks on quitting pingy <host> with
+                                hosts added whether to keep them pinging
   pingy <host>@<origin> -d      Ping a host from another machine, over ssh
   pingy <host> --from <a,b> -d  From several; pingy -g <host> graphs it from
                                 everywhere it's pinged from
@@ -124,6 +127,9 @@ In a graph:
   home · end                    Oldest · now, following new pings
   + -                           Zoom in and out
   n · p · x                     Rename · pause or resume · stop and delete
+  a                             Add hosts to graph with this one; in pingy
+                                <host>, new ones stop with it too unless kept:
+                                d keeps them all, and q asks
   ctrl-l                        Log in to the host's origin, or to one a host
                                 not shown is waiting on
   esc                           Back

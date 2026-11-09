@@ -405,7 +405,7 @@ func TestKeyHintsAllShow(t *testing.T) {
 		m := newPickModel(a)
 		check("panel", m.renderPick(), "enter open", "ctrl-t pick several", "ctrl-x kill", "ctrl-p pause", "esc quit")
 		press(m, "down", "enter")
-		check("graph", m.renderDetail(), "shift-←→ page", "home/end", "n rename", "p pause", "x kill", "esc back")
+		check("graph", m.renderDetail(), "shift-←→ page", "home/end", "a add", "n rename", "p pause", "x kill", "esc back")
 		press(m, "esc")
 		m.cursor = 0
 		press(m, "enter")
@@ -568,5 +568,192 @@ func TestPickedHostsPauseAndKillTogether(t *testing.T) {
 	got := targetsOf(monitor.List(a.root()))
 	if m.noteBad || !slices.Equal(got, []string{"9.9.9.9"}) || len(m.picked) != 0 {
 		t.Fatalf("after y: %v left, picked %v, note %q", got, m.picked, m.note)
+	}
+}
+
+func TestAddToOneHostsGraph(t *testing.T) {
+	a, ms := testApp(t, "1.1.1.1", "8.8.8.8", "9.9.9.9")
+
+	// From the panel: a, then esc, goes back to the one graph.
+	m := newPickModel(a)
+	typeText(m, "1.1")
+	press(m, "enter")
+	if m.view != viewDetail {
+		t.Fatalf("enter opened view %v", m.view)
+	}
+	press(m, "a")
+	if m.view != viewPick || !m.adding || len(m.picked) != 1 || !m.picked[ms[0].ID] {
+		t.Fatalf("a: view %v adding %v picked %v", m.view, m.adding, m.picked)
+	}
+	press(m, "esc")
+	if m.view != viewDetail || m.cur == nil || m.cur.meta.ID != ms[0].ID || m.adding {
+		t.Fatalf("after a, esc: view %v adding %v", m.view, m.adding)
+	}
+
+	// a, picking another, graphs them together; esc then goes to the panel.
+	press(m, "a")
+	typeText(m, "8.8")
+	press(m, "tab", "enter")
+	if got, want := shownTargets(m), []string{"1.1.1.1", "8.8.8.8"}; !slices.Equal(got, want) || m.view != viewAll {
+		t.Fatalf("after adding: %v in view %v", got, m.view)
+	}
+	press(m, "esc")
+	if m.view != viewPick {
+		t.Fatalf("esc from the hosts went to view %v", m.view)
+	}
+
+	// From pingy <host>: adding a host already pinged leaves this one tied
+	// to the session, and quitting asks about this one alone.
+	fg, err := monitor.Create(a.root(), "4.4.4.4", "", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fg.Foreground = true
+	if err := fg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	s := &session{meta: fg, owned: true, created: true}
+	m = newDetailModel(a, s)
+	press(m, "a")
+	typeText(m, "9.9")
+	press(m, "tab", "enter")
+	if got, want := shownTargets(m), []string{"4.4.4.4", "9.9.9.9"}; !slices.Equal(got, want) || m.view != viewAll {
+		t.Fatalf("after adding to a session: %v in view %v", got, m.view)
+	}
+	if s.detached || m.sess == nil {
+		t.Fatalf("session detached %v, held %v", s.detached, m.sess != nil)
+	}
+	if fresh, _ := fg.Reload(); !fresh.Foreground {
+		t.Fatal("adding detached the host")
+	}
+	press(m, "q")
+	if m.quitting || m.mode != "keep" {
+		t.Fatalf("q: quitting %v, mode %q", m.quitting, m.mode)
+	}
+	if screen := m.View().Content; !strings.Contains(screen, "4.4.4.4") || strings.Contains(screen, "4.4.4.4, ") {
+		t.Fatalf("the popup should name 4.4.4.4 alone:\n%s", screen)
+	}
+	press(m, "y")
+	if !m.quitting || !s.detached {
+		t.Fatalf("y: quitting %v, detached %v", m.quitting, s.detached)
+	}
+
+	// Watching a host already pinged, with another added, stops nothing.
+	s = &session{meta: ms[1]}
+	m = newDetailModel(a, s)
+	press(m, "a")
+	typeText(m, "9.9")
+	press(m, "tab", "enter", "q")
+	if !m.quitting || m.mode == "keep" {
+		t.Fatalf("q with nothing to stop: quitting %v, mode %q", m.quitting, m.mode)
+	}
+}
+
+func TestAddANewHostToASession(t *testing.T) {
+	a, _ := testApp(t)
+	fg, err := monitor.Create(a.root(), "4.4.4.4", "", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fg.Foreground, fg.Ephemeral = true, true
+	if err := fg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	s := &session{meta: fg, owned: true, created: true}
+	m := newDetailModel(a, s)
+	press(m, "a")
+	typeText(m, "10.9.8.7")
+	if rows := m.rows(); len(rows) == 0 || rows[m.cursor].add != "10.9.8.7" {
+		t.Fatalf("rows %v", rows)
+	}
+	if _, cmd := m.Update(key("enter")); cmd == nil || !m.adding {
+		t.Fatalf("enter on a new host didn't start it, adding %v", m.adding)
+	}
+	// What starting it sends back, without a real monitor.
+	added, err := monitor.Create(a.root(), "10.9.8.7", "", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Update(opMsg{pick: added.ID, done: true, started: &session{meta: added, owned: true, created: true}})
+	if got, want := shownTargets(m), []string{"4.4.4.4", "10.9.8.7"}; !slices.Equal(got, want) || m.view != viewAll {
+		t.Fatalf("after adding a new host: %v in view %v", got, m.view)
+	}
+	if s.detached || len(s.started()) != 2 {
+		t.Fatalf("session detached %v, started %d", s.detached, len(s.started()))
+	}
+	if fresh, _ := fg.Reload(); !fresh.Foreground {
+		t.Fatal("adding detached the first host")
+	}
+	check := func(screen string, want ...string) {
+		t.Helper()
+		for _, w := range want {
+			if !strings.Contains(screen, w) {
+				t.Errorf("%q isn't shown:\n%s", w, screen)
+			}
+		}
+	}
+	check(m.renderAll(), "d detach", "q stop & quit")
+
+	// q asks; esc stays, n stops them.
+	press(m, "q")
+	if m.mode != "keep" || m.quitting {
+		t.Fatalf("q: mode %q, quitting %v", m.mode, m.quitting)
+	}
+	check(m.View().Content, "Keep pinging?", "4.4.4.4, 10.9.8.7", "y keep", "n stop", "[ ] Don't ask again")
+	press(m, "esc")
+	if m.mode != "" || m.quitting {
+		t.Fatalf("esc: mode %q, quitting %v", m.mode, m.quitting)
+	}
+	press(m, "q", "n")
+	if !m.quitting || s.detached {
+		t.Fatalf("n: quitting %v, detached %v", m.quitting, s.detached)
+	}
+
+	// y, having ticked don't ask again, keeps them and stops asking.
+	m.quitting = false
+	press(m, "q", "space")
+	check(m.View().Content, "[x] Don't ask again")
+	press(m, "y")
+	if !m.quitting || !s.detached {
+		t.Fatalf("y: quitting %v, detached %v", m.quitting, s.detached)
+	}
+	for _, meta := range []*monitor.Meta{fg, added} {
+		if fresh, _ := meta.Reload(); fresh.Foreground || fresh.Ephemeral {
+			t.Fatalf("%s would still stop on quitting", meta.Target)
+		}
+	}
+	if set, _ := monitor.LoadSettings(a.Home); !set.NoKeepAsk {
+		t.Fatal("don't ask again wasn't saved")
+	}
+	s.detached = false
+	m.quitting = false
+	m.refresh()
+	press(m, "q")
+	if !m.quitting || m.mode == "keep" {
+		t.Fatalf("q after don't ask again: quitting %v, mode %q", m.quitting, m.mode)
+	}
+}
+
+func TestConfig(t *testing.T) {
+	a, _ := testApp(t)
+	var out bytes.Buffer
+	a.Stdout = &out
+	if err := a.cmdConfig(nil); err != nil || !strings.Contains(out.String(), "ask-to-keep  on") {
+		t.Fatalf("config: %q, %v", out.String(), err)
+	}
+	if err := a.cmdConfig([]string{"ask-to-keep", "off"}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := a.cmdConfig([]string{"ask-to-keep"}); err != nil || out.String() != "off\n" {
+		t.Fatalf("after off: %q, %v", out.String(), err)
+	}
+	if s, _ := monitor.LoadSettings(a.Home); !s.NoKeepAsk || s.HistoryMB != monitor.DefaultHistoryMB {
+		t.Fatalf("saved %+v", s)
+	}
+	for _, args := range [][]string{{"nope"}, {"ask-to-keep", "maybe"}, {"a", "b", "c"}} {
+		if err := a.cmdConfig(args); err == nil {
+			t.Errorf("config %v worked", args)
+		}
 	}
 }
